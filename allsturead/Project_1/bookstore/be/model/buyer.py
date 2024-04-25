@@ -3,7 +3,8 @@ import json
 import logging
 from be.model import db_conn
 from be.model import error
-from datetime import datetime
+from datetime import datetime, timedelta
+from apscheduler.schedulers.background import BackgroundScheduler
 
 class Buyer(db_conn.DBConn):
     def __init__(self):
@@ -319,3 +320,60 @@ class Buyer(db_conn.DBConn):
             return 200, "ok", "No orders found "
         else:
             return 200, "ok", ans
+
+    def auto_cancel_order(self) -> (int, str):
+        try:
+            wait_time = 20  # 等待时间20s
+            interval = datetime.utcnow() - timedelta(seconds=wait_time) # UTC时间
+            orders_to_cancel = self.conn.order_col.find({"create_time": {"$lte": interval}, "status": 0})
+            if orders_to_cancel:
+                for order in orders_to_cancel:
+                    order_id = order["order_id"]
+                    user_id = order["user_id"]
+                    store_id = order["store_id"]
+                    price = order["price"]
+                    self.conn.order_col.delete_one({"order_id": order_id, "status": 0})
+                    result = self.conn.order_detail_col.find({"order_id": order_id})
+
+                    for book in result:
+                        book_id = book["book_id"]
+                        count = book["count"]
+                        result1 = self.conn.store_col.update_one({"store_id": store_id, "books.book_id": book_id}, {"$inc": {"books.$.stock_level": count}})
+                        if result1.modified_count == 0:
+                            return error.error_stock_level_low(book_id) + (order_id,)
+
+                    self.conn.order_col.insert_one({"order_id": order_id, "user_id": user_id,"store_id": store_id, "price": price, "status": 4})
+        except BaseException as e:
+            return 528, "{}".format(str(e))
+        return 200, "ok"
+
+    def is_order_cancelled(self, order_id: str) -> (int, str):
+        result = self.conn.order_col.find_one({"order_id": order_id, "status": 4})
+        if result is None:
+            return error.error_auto_cancel_fail(order_id)
+        else:
+            return 200, "ok"
+
+    def search(self, keyword, store_id=None, page=1, per_page=10):
+        try:
+            query = {"$text": {"$search": keyword}}
+            if store_id:
+                result1 = self.conn.store_col.find({"store_id": store_id}, {"books.book_id": 1, "_id": 0})
+                for result in result1:
+                    print(result)
+                books_id = [i["book_id"] for i in result1["books"]]
+                query["id"] = {"$in": books_id}
+
+            result = self.conn.book_col.find(query,
+                                              {"score": {"$meta": "textScore"}, "_id": 0, "picture": 0}).sort(
+                [("score", {"$meta": "textScore"})])
+
+            result.skip((int(page) - 1) * per_page).limit(per_page)
+        except BaseException as e:
+            return 530, f"{str(e)}"
+        return 200, list(result)
+
+
+scheduler = BackgroundScheduler()
+scheduler.add_job(Buyer().auto_cancel_order, 'interval', id='5_second_job', seconds=5)
+scheduler.start()
