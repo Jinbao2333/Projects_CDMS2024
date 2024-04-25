@@ -1,23 +1,23 @@
 error_code = {
-    401: "authorization fail.",
-    511: "non exist user id {}",
-    512: "exist user id {}",
-    513: "non exist store id {}",
-    514: "exist store id {}",
-    515: "non exist book id {}",
-    516: "exist book id {}",
-    517: "stock level low, book id {}",
-    518: "invalid order id {}",
-    519: "not sufficient funds, order id {}",
-    520: "",
-    521: "",
-    522: "",
-    523: "",
-    524: "",
-    525: "",
-    526: "",
-    527: "",
-    528: "",
+    401: "Authorization failed.",
+    511: "Non-existent user ID: {}",
+    512: "Existing user ID: {}",
+    513: "Non-existent store ID: {}",
+    514: "Existing store ID: {}",
+    515: "Non-existent book ID: {}",
+    516: "Existing book ID: {}",
+    517: "Stock level is low for book ID: {}",
+    518: "Invalid order ID: {}",
+    519: "Insufficient funds for order ID: {}",
+    520: "Unknown error occurred.",
+    521: "Unknown error occurred.",
+    522: "Unknown error occurred.",
+    523: "Unknown error occurred.",
+    524: "Unknown error occurred.",
+    525: "Unknown error occurred.",
+    526: "Unknown error occurred.",
+    527: "Unknown error occurred.",
+    528: "Unknown error occurred."
 }
 
 
@@ -54,7 +54,7 @@ def error_invalid_order_id(order_id):
 
 
 def error_not_sufficient_funds(order_id):
-    return 519, error_code[518].format(order_id)
+    return 519, error_code[519].format(order_id)
 
 
 def error_authorization_fail():
