@@ -1,12 +1,19 @@
 # coding=utf-8
 
 from lxml import etree
-import sqlite3
 import re
 import requests
 import random
 import time
 import logging
+import pymongo
+from pymongo import MongoClient
+import re
+import requests
+import random
+import time
+import logging
+from lxml import etree
 
 user_agent = [
     "Mozilla/5.0 (Macintosh; U; Intel Mac OS X 10_6_8; en-us) AppleWebKit/534.50 (KHTML, like Gecko) Version/5.1 "
@@ -71,36 +78,30 @@ def get_user_agent():
 
 
 class Scraper:
-    database: str
     tag: str
     page: int
 
     def __init__(self):
-        self.database = "book.db"
         self.tag = ""
         self.page = 0
         self.pattern_number = re.compile(r"\d+\.?\d*")
         logging.basicConfig(filename="scraper.log", level=logging.ERROR)
+        # Connect to MongoDB
+        self.client = MongoClient('mongodb://localhost:27017/')
+        self.db = self.client['bookstore']  # Change 'bookstore' to your desired database name
 
-    def get_current_progress(self) -> ():
-        conn = sqlite3.connect(self.database)
-        results = conn.execute("SELECT tag, page from progress where id = '0'")
-        for row in results:
-            return row[0], row[1]
+    def get_current_progress(self) -> (): # type: ignore
+        progress_collection = self.db['progress']
+        progress = progress_collection.find_one({'_id': '0'})
+        if progress:
+            return progress.get('tag', ''), progress.get('page', 0)
         return "", 0
 
     def save_current_progress(self, current_tag, current_page):
-        conn = sqlite3.connect(self.database)
-        conn.execute(
-            "UPDATE progress set tag = '{}', page = {} where id = '0'".format(
-                current_tag, current_page
-            )
-        )
-        conn.commit()
-        conn.close()
+        progress_collection = self.db['progress']
+        progress_collection.update_one({'_id': '0'}, {'$set': {'tag': current_tag, 'page': current_page}}, upsert=True)
 
     def start_grab(self) -> bool:
-        self.create_tables()
         scraper.grab_tag()
         current_tag, current_page = self.get_current_progress()
         tags = self.get_tag_list()
@@ -112,75 +113,33 @@ class Scraper:
                 no = no + 20
         return True
 
-    def create_tables(self):
-        conn = sqlite3.connect(self.database)
-        try:
-            conn.execute("CREATE TABLE tags (tag TEXT PRIMARY KEY)")
-            conn.commit()
-        except sqlite3.Error as e:
-            logging.error(str(e))
-            conn.rollback()
-
-        try:
-            conn.execute(
-                "CREATE TABLE book ("
-                "id TEXT PRIMARY KEY, title TEXT, author TEXT, "
-                "publisher TEXT, original_title TEXT, "
-                "translator TEXT, pub_year TEXT, pages INTEGER, "
-                "price INTEGER, currency_unit TEXT, binding TEXT, "
-                "isbn TEXT, author_intro TEXT, book_intro text, "
-                "content TEXT, tags TEXT, picture BLOB)"
-            )
-            conn.commit()
-        except sqlite3.Error as e:
-            logging.error(str(e))
-            conn.rollback()
-
-        try:
-            conn.execute(
-                "CREATE TABLE progress (id TEXT PRIMARY KEY, tag TEXT, page integer )"
-            )
-            conn.execute("INSERT INTO progress values('0', '', 0)")
-            conn.commit()
-        except sqlite3.Error as e:
-            logging.error(str(e))
-            conn.rollback()
-
     def grab_tag(self):
         url = "https://book.douban.com/tag/?view=cloud"
-        r = requests.get(url, headers=get_user_agent())
+        r = requests.get(url)
         r.encoding = "utf-8"
-        h: etree.ElementBase = etree.HTML(r.text)
-        tags: [] = h.xpath(
+        h = etree.HTML(r.text)
+        tags = h.xpath(
             '/html/body/div[@id="wrapper"]/div[@id="content"]'
             '/div[@class="grid-16-8 clearfix"]/div[@class="article"]'
             '/div[@class=""]/div[@class="indent tag_cloud"]'
             "/table/tbody/tr/td/a/@href"
         )
-        conn = sqlite3.connect(self.database)
-        c = conn.cursor()
-        try:
-            for tag in tags:
-                t: str = tag.strip("/tag")
-                c.execute("INSERT INTO tags VALUES ('{}')".format(t))
-            c.close()
-            conn.commit()
-            conn.close()
-        except sqlite3.Error as e:
-            logging.error(str(e))
-            conn.rollback()
-            return False
-        return True
+        tag_list = []
+        for tag in tags:
+            t = tag.strip("/tag")
+            tag_list.append(t)
+        tags_collection = self.db['tags']
+        tags_collection.insert_many([{'tag': tag} for tag in tag_list])
 
     def grab_book_list(self, tag="小说", pageno=1) -> bool:
         logging.info("start to grab tag {} page {}...".format(tag, pageno))
         self.save_current_progress(tag, pageno)
         url = "https://book.douban.com/tag/{}?start={}&type=T".format(tag, pageno)
-        r = requests.get(url, headers=get_user_agent())
+        r = requests.get(url)
         r.encoding = "utf-8"
-        h: etree.Element = etree.HTML(r.text)
+        h = etree.HTML(r.text)
 
-        li_list: [] = h.xpath(
+        li_list = h.xpath(
             '/html/body/div[@id="wrapper"]/div[@id="content"]'
             '/div[@class="grid-16-8 clearfix"]'
             '/div[@class="article"]/div[@id="subject_list"]'
@@ -192,9 +151,7 @@ class Scraper:
             '/div[@class="article"]/div[@id="subject_list"]'
             '/div[@class="paginator"]/span[@class="next"]/a[@href]'
         )
-        has_next = True
-        if len(next_page) == 0:
-            has_next = False
+        has_next = True if len(next_page) > 0 else False
         if len(li_list) == 0:
             return False
 
@@ -205,31 +162,23 @@ class Scraper:
                 delay = float(random.randint(0, 200)) / 100.0
                 time.sleep(delay)
                 self.crow_book_info(book_id)
-            except BaseException as e:
-                logging.error(
-                    logging.error("error when scrape {}, {}".format(book_id, str(e)))
-                )
+            except Exception as e:
+                logging.error("error when scrape {}, {}".format(book_id, str(e)))
         return has_next
 
-    def get_tag_list(self) -> [str]:
-        ret = []
-        conn = sqlite3.connect(self.database)
-        results = conn.execute(
-            "SELECT tags.tag from tags join progress where tags.tag >= progress.tag"
-        )
-        for row in results:
-            ret.append(row[0])
-        return ret
+    def get_tag_list(self) -> [str]: # type: ignore
+        tags_collection = self.db['tags']
+        return [tag['tag'] for tag in tags_collection.find()]
 
     def crow_book_info(self, book_id) -> bool:
-        conn = sqlite3.connect(self.database)
-        for _ in conn.execute("SELECT id from book where id = ('{}')".format(book_id)):
+        book_collection = self.db['book']
+        if book_collection.find_one({'id': book_id}):
             return
 
         url = "https://book.douban.com/subject/{}/".format(book_id)
-        r = requests.get(url, headers=get_user_agent())
+        r = requests.get(url)
         r.encoding = "utf-8"
-        h: etree.Element = etree.HTML(r.text)
+        h = etree.HTML(r.text)
         e_text = h.xpath('/html/body/div[@id="wrapper"]/h1/span/text()')
         if len(e_text) == 0:
             return False
@@ -298,7 +247,7 @@ class Scraper:
         pic_href = e_subject[0].xpath('div[@id="mainpic"]/a/@href')
         picture = None
         if len(pic_href) > 0:
-            res = requests.get(pic_href[0], headers=get_user_agent())
+            res = requests.get(pic_href[0])
             picture = res.content
 
         info_children = e_subject[0].xpath('div[@id="info"]/child::node()')
@@ -343,80 +292,45 @@ class Scraper:
             if text != "":
                 book_info[label] = text
 
-        sql = (
-            "INSERT INTO book("
-            "id, title, author, "
-            "publisher, original_title, translator, "
-            "pub_year, pages, price, "
-            "currency_unit, binding, isbn, "
-            "author_intro, book_intro, content, "
-            "tags, picture)"
-            "VALUES("
-            "?, ?, ?, "
-            "?, ?, ?, "
-            "?, ?, ?, "
-            "?, ?, ?, "
-            "?, ?, ?, "
-            "?, ?)"
-        )
-
         unit = None
         price = None
         pages = None
-        conn = sqlite3.connect(self.database)
-        try:
-            s_price = book_info.get("定价")
-            if s_price is None:
-                # price cannot be NULL
-                logging.error(
-                    "error when scrape book_id {}, cannot retrieve price...", book_id
-                )
-                return None
-            else:
-                e = re.findall(self.pattern_number, s_price)
-                if len(e) != 0:
-                    number = e[0]
-                    unit = s_price.replace(number, "").strip()
-                    price = int(float(number) * 100)
 
-            s_pages = book_info.get("页数")
-            if s_pages is not None:
-                # pages can be NULL
-                e = re.findall(self.pattern_number, s_pages)
-                if len(e) != 0:
-                    pages = int(e[0])
+        s_price = book_info.get("定价")
+        if s_price is not None:
+            e = re.findall(self.pattern_number, s_price)
+            if len(e) != 0:
+                number = e[0]
+                unit = s_price.replace(number, "").strip()
+                price = int(float(number) * 100)
 
-            conn.execute(
-                sql,
-                (
-                    book_id,
-                    title,
-                    book_info.get("作者"),
-                    book_info.get("出版社"),
-                    book_info.get("原作名"),
-                    book_info.get("译者"),
-                    book_info.get("出版年"),
-                    pages,
-                    price,
-                    unit,
-                    book_info.get("装帧"),
-                    book_info.get("ISBN"),
-                    author_intro,
-                    book_intro,
-                    content,
-                    tags,
-                    picture,
-                ),
-            )
-            conn.commit()
-        except sqlite3.Error as e:
-            logging(str(e))
-            conn.rollback()
-        except TypeError as e:
-            logging.error("error when scrape {}, {}".format(book_id, str(e)))
-            conn.rollback()
-            return False
-        conn.close()
+        s_pages = book_info.get("页数")
+        if s_pages is not None:
+            e = re.findall(self.pattern_number, s_pages)
+            if len(e) != 0:
+                pages = int(e[0])
+
+        book = {
+            'id': book_id,
+            'title': title,
+            'author': book_info.get("作者"),
+            'publisher': book_info.get("出版社"),
+            'original_title': book_info.get("原作名"),
+            'translator': book_info.get("译者"),
+            'pub_year': book_info.get("出版年"),
+            'pages': pages,
+            'price': price,
+            'currency_unit': unit,
+            'binding': book_info.get("装帧"),
+            'isbn': book_info.get("ISBN"),
+            'author_intro': author_intro,
+            'book_intro': book_intro,
+            'content': content,
+            'tags': tags,
+            'picture': picture,
+        }
+
+        book_collection.insert_one(book)
         return True
 
 
