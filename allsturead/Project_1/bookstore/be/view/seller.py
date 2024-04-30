@@ -25,7 +25,7 @@ def seller_add_book():
 
     s = seller.Seller()
     code, message = s.add_book(
-        user_id, store_id, book_info.get("id"), json.dumps(book_info), stock_level
+        user_id, store_id, book_info["id"], json.dumps(book_info), stock_level
     )
 
     return jsonify({"message": message}), code
