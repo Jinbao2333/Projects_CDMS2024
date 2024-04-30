@@ -22,10 +22,10 @@ database_instance = None
 
 def init_database(dbpath):
     global database_instance
-    database_instance = Store(db_path)
+    database_instance = Store(dbpath)
 
 def get_bd_conn():
     global database_instance
     db_path = "mongodb://localhost:27017/"
-    database_instance = Store(dbpath)
+    database_instance = Store(db_path)
     return database_instance
