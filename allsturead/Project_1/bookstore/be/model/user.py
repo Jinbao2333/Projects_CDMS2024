@@ -59,16 +59,16 @@ class User(db_conn.DBConn):
             token = jwt_encode(user_id, terminal)
             self.conn.user_col.insert_one({
                 "user_id": user_id,
-                "passward": passward,
-                "balance": balance,
+                "password": password,
+                "balance": 0,
                 "token": token,
                 "terminal": terminal,
             })
-        except Expextion:
+        except Exception:
             return error.error_exist_user_id(user_id)
         return 200, "ok"
 
-    def check_token(self, user_id: str, token: str) -> (int, str):
+    def check_token(self, user_id: str, token: str) -> (int, str): # type: ignore
         cursor = self.conn.user_col.find({"user_id": user_id})
         users = list(cursor)
         if len(users) == 0:
@@ -78,7 +78,7 @@ class User(db_conn.DBConn):
             return error.error_authorization_fail()
         return 200, "ok"
 
-    def check_password(self, user_id: str, password: str) -> (int, str):
+    def check_password(self, user_id: str, password: str) -> (int, str): # type: ignore
         results = self.conn.user_col.find_one({"user_id": user_id})
         if results is None:
             return error.error_authorization_fail()
@@ -86,7 +86,7 @@ class User(db_conn.DBConn):
             return error.error_authorization_fail()
         return 200, "ok"
 
-    def login(self, user_id: str, password: str, terminal: str) -> (int, str, str):
+    def login(self, user_id: str, password: str, terminal: str) -> (int, str, str): # type: ignore
         token = ""
         try:
             code, message = self.check_password(user_id, password)
@@ -120,7 +120,7 @@ class User(db_conn.DBConn):
             return 528, "{}".format(str(e))
         return 200, "ok"
 
-    def unregister(self, user_id: str, password: str) -> (int, str):
+    def unregister(self, user_id: str, password: str) -> (int, str): # type: ignore
         try:
             code, message = self.check_password(user_id, password)
             if code != 200:
