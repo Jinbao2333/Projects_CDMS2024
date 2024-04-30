@@ -1,1 +1,17 @@
 allsturead/Project_1/bookstore/fe/data/book_lx.db
+allsturead/Project_1/bookstore/fe/__pycache__/conftest.cpython-311-pytest-8.2.0.pyc
+allsturead/Project_1/bookstore/fe/__pycache__/__init__.cpython-311.pyc
+allsturead/Project_1/bookstore/be/view/__pycache__/seller.cpython-311.pyc
+allsturead/Project_1/bookstore/be/view/__pycache__/buyer.cpython-311.pyc
+allsturead/Project_1/bookstore/be/view/__pycache__/auth.cpython-311.pyc
+allsturead/Project_1/bookstore/be/view/__pycache__/__init__.cpython-311.pyc
+allsturead/Project_1/bookstore/be/model/__pycache__/user.cpython-311.pyc
+allsturead/Project_1/bookstore/be/model/__pycache__/store.cpython-311.pyc
+allsturead/Project_1/bookstore/be/model/__pycache__/seller.cpython-311.pyc
+allsturead/Project_1/bookstore/be/model/__pycache__/error.cpython-311.pyc
+allsturead/Project_1/bookstore/be/model/__pycache__/db_conn.cpython-311.pyc
+allsturead/Project_1/bookstore/be/model/__pycache__/buyer.cpython-311.pyc
+allsturead/Project_1/bookstore/be/model/__pycache__/__init__.cpython-311.pyc
+allsturead/Project_1/bookstore/be/__pycache__/serve.cpython-311.pyc
+allsturead/Project_1/bookstore/be/__pycache__/__init__.cpython-311.pyc
+allsturead/Project_1/bookstore/.coverage

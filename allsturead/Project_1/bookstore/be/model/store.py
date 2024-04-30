@@ -3,7 +3,7 @@ from pymongo import MongoClient
 class Store:
 
     def __init__(self, db_path):
-        self.clint = MongoClient(db_path)
+        self.client = MongoClient(db_path)
         self.db = self.client["bookstore"]
         self.init_collections()
     
@@ -24,7 +24,7 @@ def init_database(dbpath):
     global database_instance
     database_instance = Store(dbpath)
 
-def get_bd_conn():
+def get_db_conn():
     global database_instance
     db_path = "mongodb://localhost:27017/"
     database_instance = Store(db_path)
