@@ -375,7 +375,7 @@ func (p *peer) HandleRaftReady(msgs []message.Msg, pdScheduler chan<- worker.Tas
 	log.Debug(fmt.Sprintf("%v handle raft ready", p.Tag))
 
 	ready := p.RaftGroup.Ready()
-	// TODO: workaround for:
+	// DONE: workaround for:
 	//   in kvproto/eraftpb, we use *SnapshotMetadata
 	//   but in etcd, they use SnapshotMetadata
 	if ready.Snapshot.GetMetadata() == nil {

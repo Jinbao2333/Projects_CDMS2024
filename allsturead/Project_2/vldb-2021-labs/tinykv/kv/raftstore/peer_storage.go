@@ -272,13 +272,15 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 		log_key := meta.RaftLogKey(ps.region.GetId(), entry.Index)
 		raftWB.SetMeta(log_key, &entry)
 
-		log.Debug(fmt.Sprintf("entry=%v", entry))
+		// log.Debug(fmt.Sprintf("entry=%v", entry))
 	}
 
 	for i := lastIndex + 1; i <= prevLastIndex; i++ {
 		// Hint2: As the to be append logs may conflict with the old ones, try to delete the left
 		//       old ones whose entry indexes are greater than the last to be append entry.
 		//       Delete these previously appended log entries which will never be committed.
+		log_key := meta.RaftLogKey(ps.region.GetId(), i)
+		raftWB.DeleteMeta(log_key)
 	}
 
 	ps.raftState.LastIndex = lastIndex

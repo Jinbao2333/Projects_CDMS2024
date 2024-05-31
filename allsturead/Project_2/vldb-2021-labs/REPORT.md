@@ -4,7 +4,7 @@
 Lab 1 的任务是关于实现分布式数据库系统中的存储与日志层。
 
 ### P0
-P0 部分的主要任务就是补全 `standalone_storage.go` 部分的代码，以下是我们的实现和介绍。
+P0 部分的主要任务就是补全 `standalone_storage.go` 部分的代码，以下是我们具体的实现和介绍。
 
 `standalone_storage.go`: 
 - `Reader`: 接受一个 `*kvrpcpb.Context` 类型的参数，表示一个 KV RPC 的上下文。这个方法的主要作用是创建一个 `StorageReader`，用于从存储中读取数据。在方法体中，首先调用 `s.db.NewTransaction(false)` 创建一个新的只读事务，然后将这个事务传递给 `NewBadgerReader` 函数，创建一个 `BadgerReader` 实例。`BadgerReader` 结构体是 `StorageReader` 接口的一个实现，用于从 Badger 数据库中读取数据。
@@ -60,7 +60,7 @@ Lab 1 中剩余未完成的 P1 工作主要集中在实现`kv/raftstore`目录�
    - 在`kv/raftstore/peer.go`文件中，需要实现`HandleRaftReady`方法。这个方法负责处理Raft实例返回的Ready状态，包括发送消息给其他节点、持久化Raft状态和日志等关键步骤，是Raft状态机推进的核心逻辑。
 
 3. **保存就绪状态**：
-   - 在`kv/raftstore/peer_storage.go`文件中，需要实现`SaveReadyState`方法。此方法专注于持久化Raft的当前状态和相关日志，确保即使在节点故障的情况下也能恢复到最新的状态，是实现持久化和故障恢复能力的关键环节。
+   - 在`kv/raftstore/peer_storage.go`文件中，首先需要实现`SaveReadyState`方法。此方法专注于持久化Raft的当前状态和相关日志，确保即使在节点故障的情况下也能恢复到最新的状态，是实现持久化和故障恢复能力的关键环节。
 
 4. **追加Raft日志到日志引擎**：
    - 同样在`kv/raftstore/peer_storage.go`文件中，需要完成`Append`方法的实现。这个方法负责将Raft Ready中的日志条目追加到日志引擎中，是日志复制和持久化过程的直接执行者，确保数据的一致性和持久性。
@@ -110,28 +110,42 @@ Lab 1 中剩余未完成的 P1 工作主要集中在实现`kv/raftstore`目录�
 
 - `kv/raftstore/peer.go`: 函数 `HandleRaftReady` 是处理 Raft 协议中的 "ready" 状态的方法。"ready" 状态表示 Raft 节点已经准备好进行一些操作，例如发送消息、应用日志条目或者应用快照。
 
-函数的主要步骤：
+    函数的主要步骤：
 
-1. 检查 peer 是否已经停止，或者是否有待处理的快照但还未准备好处理，如果是，则直接返回。
+    1. 检查 peer 是否已经停止，或者是否有待处理的快照但还未准备好处理，如果是，则直接返回。
 
-2. 开始处理 Raft 的 "ready" 状态。如果 "ready" 状态中有快照，但是快照的元数据为空，那么会创建一个新的元数据。
+    2. 开始处理 Raft 的 "ready" 状态。如果 "ready" 状态中有快照，但是快照的元数据为空，那么会创建一个新的元数据。
 
-3. 如果当前 peer 是 leader，那么会发送 "ready" 状态中的所有消息，并清空这些消息。
+    3. 如果当前 peer 是 leader，那么会发送 "ready" 状态中的所有消息，并清空这些消息。
 
-4. 如果 "ready" 状态的软状态（SoftState）存在，并且 Raft 状态是 leader，那么会调度一个心跳任务。
+    4. 如果 "ready" 状态的软状态（SoftState）存在，并且 Raft 状态是 leader，那么会调度一个心跳任务。
 
-5. 尝试保存 "ready" 状态。如果保存失败，函数会 panic。如果当前 peer 不是 leader，那么会发送 "ready" 状态中的所有消息。
+    5. 尝试保存 "ready" 状态。如果保存失败，函数会 panic。如果当前 peer 不是 leader，那么会发送 "ready" 状态中的所有消息。
 
-6. 如果应用了快照，那么会将当前 peer 注册到消息中，以便后续使用。同时，更新 LastApplyingIdx 为快照的元数据中的索引。如果没有应用快照，那么会处理 "ready" 状态中已提交的日志条目。如果有已提交的日志条目，那么会更新 LastApplyingIdx 为最后一个日志条目的索引，并将这些日志条目添加到消息中。
+    6. 如果应用了快照，那么会将当前 peer 注册到消息中，以便后续使用。同时，更新 LastApplyingIdx 为快照的元数据中的索引。如果没有应用快照，那么会处理 "ready" 状态中已提交的日志条目。如果有已提交的日志条目，那么会更新 LastApplyingIdx 为最后一个日志条目的索引，并将这些日志条目添加到消息中。
 
-函数最后返回应用快照的结果和消息。
+    函数最后返回应用快照的结果和消息。
 
-根据注释的提示，**需要补全的代码**部分主要有两个：
+    根据注释的提示，**需要补全的代码**部分主要有两个：
 
-1. 在开始处理 Raft 的 "ready" 状态之前，需要检查是否有 "ready" 状态需要处理，如果没有，则直接返回。
+    1. 在开始处理 Raft 的 "ready" 状态之前，需要检查是否有 "ready" 状态需要处理，如果没有，则直接返回。代码如下。
+        ```
+        if !p.RaftGroup.HasReady() {
+            return nil, msgs
+        }
+        ```
 
-2. 在处理完 "ready" 状态后，需要尝试推进 Raft 组的状态。这通常通过调用 Raft 组的 `Advance` 方法来完成。
+    2. 在处理完 "ready" 状态后，需要尝试推进 Raft 组的状态。这需要通过调用 Raft 组的 `Advance` 方法来完成。
+        ```
+        p.RaftGroup.Advance(ready)
+        ```
 
+- `kv/raftstore/peer_storage.go`:
+    
+    - `SaveReadyState`: 
+    首先，检查 "ready" 状态中的日志条目是否为空。如果不为空，那么就调用 `ps.Append(ready.Entries, raftWB)` 方法处理这些日志条目。这个方法会将日志条目追加到 Raft 的写入批次中；然后检查 `ps.raftState.LastIndex` 是否大于 0。如果大于 0，那么表示这个 peer 不是刚从 Raft 消息创建的，已经应用过快照，所以需要处理硬状态。接着，检查 "ready" 状态中的硬状态是否为空。如果不为空，那么就将其保存到 `ps.raftState.HardState` 中。这段代码根据 "ready" 状态的内容，更新 peer 的状态，确保 Raft 集群的状态一致。
+
+    - `Append`: 第一个循环中，首先我们生成一个日志键   `log_key`，其中 `ps.region.GetId()` 是 region 的 ID，`entry.Index` 是日志条目的索引；该日志键用于在 Raft 的写入批次中标识这个日志条目。然后将日志条目作为元数据类型的键值对保存到 Raft 的写入批次中。第二个循环的目的类似，只是进行删除日志条目。在这个过程中，首先还是生成一个日志键，然后删除 Raft 的写入批次中对应的日志条目。这是在处理旧的、可能与新的日志条目冲突的日志条目时使用的。
 
 
 ## 错误记录
