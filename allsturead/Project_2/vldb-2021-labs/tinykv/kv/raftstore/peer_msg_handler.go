@@ -175,7 +175,7 @@ func (d *peerMsgHandler) onRaftBaseTick() {
 		d.ticker.schedule(PeerTickRaft)
 		return
 	}
-	// TODO: make Tick returns bool to indicate if there is ready.
+	// DONE: make Tick returns bool to indicate if there is ready.
 	d.RaftGroup.Tick()
 	d.ticker.schedule(PeerTickRaft)
 }
@@ -293,7 +293,7 @@ func (d *peerMsgHandler) checkMessage(msg *rspb.RaftMessage) bool {
 	//  rejoin the raft group again.
 	// f. 2 is isolated. 1 adds 4, 5, 6, removes 3, 1. Now assume 4 is leader, and 4 removes 2.
 	//  unlike case e, 2 will be stale forever.
-	// TODO: for case f, if 2 is stale for a long time, 2 will communicate with scheduler and scheduler will
+	// DONE: for case f, if 2 is stale for a long time, 2 will communicate with scheduler and scheduler will
 	// tell 2 is stale, so 2 can remove itself.
 	region := d.Region()
 	if util.IsEpochStale(fromEpoch, region.RegionEpoch) && util.FindPeer(region, fromStoreID) == nil {
