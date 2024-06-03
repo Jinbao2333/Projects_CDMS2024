@@ -21,7 +21,7 @@ P0 部分的主要任务就是补全 `standalone_storage.go` 部分的代码，�
 
     而如果 `Data` 字段的类型是 `storage.Delete`，则表示这是一个删除操作。在这种情况下，我们将 `Data` 字段转换为 `storage.Delete` 类型，然后调用 `engine_util.DeleteCF` 函数将数据从数据库中删除。`DeleteCF` 函数接受三个参数：数据库实例、列族名称和键。如果删除操作失败，返回错误。
 
-    需要注意的是，指导文件中已经指出了 Badger 数据库不支持列族（Column Family），所以这里使用了一个包装器来模拟列族的功能。这是通过 `engine_util.PutCF` 和 `engine_util.DeleteCF` 函数实现的，这两个函数都接受列族名称作为参数，并在内部将列族名称和键组合成新的键，然后对这个新的键进行操作。
+    需要注意的是，指导文件中已经指出了 Badger 数据库不支持列族（Column Family），所以这里使用了一个包装器来模拟列族的功能 —— 通过 `engine_util.PutCF` 和 `engine_util.DeleteCF` 函数实现，这两个函数都接受列族名称作为参数，并在内部将列族名称和键组合成新的键，然后对这个新的键进行操作。
 
 完成以后，我们对这部分进行评测（开始时遇到了错误，见后文的错误记录 1 ），通过了这部分的评测，具体地，得到如下输出结果。
 
@@ -173,6 +173,29 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 经过漫长的运行之后，我们通过了所有八项测试，这也宣告了我们对 Lab 1 全部工作的完成。由于测试输出结果较长，我们就不在此展示具体输出结果了。
 
 ## Lab 2
+
+在完成了 Lab 1 的工作之后，Lab 2 将继续构建分布式事务层，特别是在 TinyKV 服务器中实现 Percolator 协议的部分。
+
+在 Lab 1 中，我们实现了 Raft 日志引擎和存储引擎，确保了事务日志的持久性以及系统状态在故障恢复后的完整性。现在，在 Lab 2 中，我们将关注于保证事务的原子性和并发控制下的正确性，即 Atomicity 和 Isolation 属性。这将通过实施 Percolator 协议以及使用全局时间戳排序来达成，从而能够提供类似于 Snapshot Isolation 或 Repeatable Read 的强隔离级别。
+它的事务处理流程大致如下：
+- 用户向 TinySQL 服务器发送写查询（如 Insert）。
+- 查询被解析和执行，用户数据从行格式转换为键值对。
+- 交易模块负责将这些键值对提交到存储引擎。鉴于不同的键可能位于不同的区域，这些区域可能分布在不同的 TinyKV 服务器上，因此交易引擎必须确保提交过程最终要么成功，要么完全不执行任何更改，这就是 Percolator 协议发挥作用的地方。
+
+然后我们进行任务总览。
+
+1. **实现预写（Prewrite）和提交（Commit）命令**：
+   - 这是事务引擎中最重要的两个接口。你需要在 `kv/transaction/commands/prewrite.go` 和 `kv/transaction/commands/commit.go` 文件中完成缺失的代码。这两个命令负责两阶段提交的一部分：预写阶段和提交阶段。
+   
+2. **实现回滚（Rollback）和检查事务状态（CheckTxnStatus）命令**：
+   - 在 `kv/transaction/commands/rollback.go` 和 `kv/transaction/commands/checkTxn.go` 文件中完成相关代码，实现解锁键并放置回滚记录的功能，以及查询特定事务的主键锁定状态。
+
+3. **实现解决锁（ResolveLock）命令**：
+   - 在 `kv/transaction/commands/resolve.go` 文件中实现缺失代码，当事务状态确定时，此命令用于提交或回滚锁定。
+
+接下来我们逐一实现这些任务。
+
+### P1
 
 
 
