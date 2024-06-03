@@ -176,26 +176,97 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 
 在完成了 Lab 1 的工作之后，Lab 2 将继续构建分布式事务层，特别是在 TinyKV 服务器中实现 Percolator 协议的部分。
 
-在 Lab 1 中，我们实现了 Raft 日志引擎和存储引擎，确保了事务日志的持久性以及系统状态在故障恢复后的完整性。现在，在 Lab 2 中，我们将关注于保证事务的原子性和并发控制下的正确性，即 Atomicity 和 Isolation 属性。这将通过实施 Percolator 协议以及使用全局时间戳排序来达成，从而能够提供类似于 Snapshot Isolation 或 Repeatable Read 的强隔离级别。
-它的事务处理流程大致如下：
-- 用户向 TinySQL 服务器发送写查询（如 Insert）。
-- 查询被解析和执行，用户数据从行格式转换为键值对。
-- 交易模块负责将这些键值对提交到存储引擎。鉴于不同的键可能位于不同的区域，这些区域可能分布在不同的 TinyKV 服务器上，因此交易引擎必须确保提交过程最终要么成功，要么完全不执行任何更改，这就是 Percolator 协议发挥作用的地方。
+在 Lab 1 中，我们实现了 Raft 日志引擎和存储引擎，确保了事务日志的持久性以及系统状态在故障恢复后的完整性。现在，在 Lab 2 中，我们将实现分布式事务层，主要关注如何在 `TinyKV` 中实现 Percolator 协议。这一层将确保事务的原子性和隔离性。Percolator 协议和全局时间戳顺序将帮助实现强隔离级别（快照隔离或可重复读）。主要任务包括实现事务的两阶段提交（2PC）、冲突处理和恢复机制。
 
-然后我们进行任务总览。
+#### 主要任务
 
-1. **实现预写（Prewrite）和提交（Commit）命令**：
-   - 这是事务引擎中最重要的两个接口。你需要在 `kv/transaction/commands/prewrite.go` 和 `kv/transaction/commands/commit.go` 文件中完成缺失的代码。这两个命令负责两阶段提交的一部分：预写阶段和提交阶段。
-   
-2. **实现回滚（Rollback）和检查事务状态（CheckTxnStatus）命令**：
-   - 在 `kv/transaction/commands/rollback.go` 和 `kv/transaction/commands/checkTxn.go` 文件中完成相关代码，实现解锁键并放置回滚记录的功能，以及查询特定事务的主键锁定状态。
+1. **实现 `Get` 命令**：
+   - 实现 `kv/transaction/commands/get.go` 文件中缺少的代码，以支持点查询操作。
 
-3. **实现解决锁（ResolveLock）命令**：
-   - 在 `kv/transaction/commands/resolve.go` 文件中实现缺失代码，当事务状态确定时，此命令用于提交或回滚锁定。
+2. **实现 `Prewrite` 和 `Commit` 命令**：
+   - `Prewrite` 阶段：将所有键的预写锁记录在 `lock column family` 中；
+   - `Commit` 阶段：首先提交主键，将写记录存入 `write column family` 并解锁预写锁；
+   - 这些代码在 `kv/transaction/commands/prewrite.go` 和 `kv/transaction/commands/commit.go` 中实现；
+   - 注意处理重复请求和读写冲突！
+
+3. **实现 `Rollback` 和 `CheckTxnStatus` 命令**：
+   - `Rollback`：用于解锁键并记录回滚信息；
+   - `CheckTxnStatus`：查询特定事务的主键锁状态；
+   - 这些代码在 `kv/transaction/commands/rollback.go` 和 `kv/transaction/commands/checkTxn.go` 中实现；
+   - 处理锁不存在的情况和重复请求。
+
+4. **实现 `ResolveLock` 命令**：
+   - `Resolve`：用于根据事务状态决定提交或回滚锁；
+   - 这些代码在 `kv/transaction/commands/resolve.go` 中实现；
+   - 确保输入请求参数中事务状态已决定。
+
+#### 文件路径与测试节点
+
+1. **理解命令抽象**：
+   - `Command` 接口定义在 `kv/transaction/commands/command.go` 中，包含 `WillWrite`、`Read` 和 `PrepareWrites` 方法。
+
+2. **`Get`**：
+   - 在 `kv/transaction/commands/get.go` 文件中完成
+
+3. **`Prewrite` 和 `Commit`**：
+   - 在 `kv/transaction/commands/prewrite.go` 和 `kv/transaction/commands/commit.go` 文件中完成
+   - 完成后可以运行 `make lab2P1` 测试。
+
+4. **`Rollback` 和 `CheckTxnStatus`**：
+   - 在 `kv/transaction/commands/rollback.go` 和 `kv/transaction/commands/checkTxn.go` 文件中完成。
+   - 完成后可以运行 `make lab2P2` 测试。
+
+5. **`ResolveLock`**：
+   - 在 `kv/transaction/commands/resolve.go` 文件中完成
+   - 完成后可以运行 `make lab2P3` 测试。
+
+6. **最终测试**：
+   - 完成所有命令并通过测试后，运行 `make lab2P4` 进行额外测试。
+
+通过完成 Lab 2，将实现 `TinyKV` 中的 Percolator 协议，支持分布式事务的原子性和隔离性。这些功能包括事务的预写和提交、回滚机制、状态检查和锁的解析，确保在分布式环境中处理事务时的正确性和可靠性。
 
 接下来我们逐一实现这些任务。
 
 ### P1
+
+首先，我们需要理解实验文档中 Command Abstraction 的内容，具体地，我们先看到 Single Raft Group 这张图片，展示了单个 Raft 组的工作流程：客户端请求、节点间消息和心跳信号首先进入 FIFO 队列，Raft 状态机从队列中取出条目进行处理，生成响应消息并发送给其他节点。处理客户端请求生成的日志条目被追加到 Raft 日志中，并在多数节点确认后标记为已提交。已提交的日志条目被应用到状态机，最后将处理结果响应给客户端。
+
+而在 `kv/transaction/commands/command.go` 中定义了所有事务命令的接口。这个接口涵盖了从接收 gRPC 请求到返回响应的全过程。
+
+#### 功能实现方式
+
+1. **`WillWrite`**:
+   - 返回需要为该请求写入的所有键的列表。如果命令是只读的，则返回 `nil`。
+   - 这个方法的目的是生成需要写入的内容，以便后续的写操作可以知道要写哪些键。
+
+2. **`Read`**:
+   - 执行命令的只读部分。如果 `WillWrite` 返回 `nil`，则只调用此方法。如果命令需要写入数据库，则应该返回该命令将写入的键的非空集。
+   - 这个方法用于处理只读请求，从而无需执行写操作。
+
+3. **`PrepareWrites`**:
+   - 用于在 mvcc 事务中构建写入内容。命令还可以使用 `txn` 进行非事务性的读写操作。如果在不修改 `txn` 的情况下返回，则表示不会执行任何事务。
+   - 这是处理写命令的核心部分，通过这个方法来构建实际的写入内容。
+
+4. **`StartTs`**:
+   - 返回当前命令的全局唯一标识符（`start_ts`），这是分配的全局时间戳。
+   - 每个事务都有一个唯一的 `start_ts`，用于标识和排序事务。
+
+#### 整个请求处理流程
+
+1. **接收客户端请求**：
+   - 客户端通过 gRPC 发送请求到 TinyKV 服务器。
+
+2. **处理事务命令**：
+   - 服务器根据请求生成相应的事务命令，调用 `WillWrite`、`Read` 和 `PrepareWrites` 方法来处理请求。
+   - 生成的写入变更会被转换为 Raft 命令请求，并发送到 Raft 存储引擎。
+
+3. **Raft 日志提交和应用**：
+   - Raft 状态机处理这些命令请求，先将其追加到 Raft 日志，然后通过 Raft 协议确保日志条目被多数节点确认并提交。
+   - 提交后的日志条目会被应用到状态机，以更新集群状态。
+
+4. **响应客户端**：
+   - 当事务命令成功应用后，服务器会将处理结果返回给客户端，完成整个请求处理流程。
+
 
 
 
