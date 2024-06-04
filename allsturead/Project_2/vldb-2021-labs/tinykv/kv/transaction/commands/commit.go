@@ -28,11 +28,14 @@ func NewCommit(request *kvrpcpb.CommitRequest) Commit {
 
 func (c *Commit) PrepareWrites(txn *mvcc.MvccTxn) (interface{}, error) {
 	commitTs := c.request.CommitVersion
+	// DONE
 	// YOUR CODE HERE (lab2).
 	// Check if the commitTs is invalid, the commitTs must be greater than the transaction startTs. If not
 	// report unexpected error.
-	panic("PrepareWrites is not implemented for commit command")
-
+	if commitTs <= c.startTs {
+		return nil, fmt.Errorf("invalid commitTs: %v, should be greater than startTs: %v", commitTs, c.startTs)
+	}
+	
 	response := new(kvrpcpb.CommitResponse)
 
 	// Commit each key.
@@ -53,20 +56,28 @@ func commitKey(key []byte, commitTs uint64, txn *mvcc.MvccTxn, response interfac
 	}
 
 	// If there is no correspond lock for this transaction.
-	panic("commitKey is not implemented yet")
 	log.Debug("commitKey", zap.Uint64("startTS", txn.StartTS),
 		zap.Uint64("commitTs", commitTs),
 		zap.String("key", hex.EncodeToString(key)))
 	if lock == nil || lock.Ts != txn.StartTS {
+
+		// DONE
 		// YOUR CODE HERE (lab2).
 		// Key is locked by a different transaction, or there is no lock on the key. It's needed to
 		// check the commit/rollback record for this key, if nothing is found report lock not found
 		// error. Also the commit request could be stale that it's already committed or rolled back.
-
-		respValue := reflect.ValueOf(response)
-		keyError := &kvrpcpb.KeyError{Retryable: fmt.Sprintf("lock not found for key %v", key)}
-		reflect.Indirect(respValue).FieldByName("Error").Set(reflect.ValueOf(keyError))
-		return response, nil
+		if lock == nil || lock.Ts != txn.StartTS {
+			existingWrite, _, err := txn.CurrentWrite(key)
+			if err != nil {
+				return nil, err
+			}
+			if existingWrite == nil {
+				respValue := reflect.ValueOf(response)
+				keyError := &kvrpcpb.KeyError{Retryable: fmt.Sprintf("lock not found for key %v", key)}
+				reflect.Indirect(respValue).FieldByName("Error").Set(reflect.ValueOf(keyError))
+				return response, nil
+			}
+		}
 	}
 
 	// Commit a Write object to the DB

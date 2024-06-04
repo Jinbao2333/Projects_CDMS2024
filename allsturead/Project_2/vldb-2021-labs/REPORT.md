@@ -268,10 +268,114 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
    - 当事务命令成功应用后，服务器会将处理结果返回给客户端，完成整个请求处理流程。
 
 #### `kv/transaction/commands/get.go`: 
+在 `kv/transaction/commands/get.go` 文件中，我们需要实现 `GetCommand` 结构体的 `PrepareWrites` 方法。这个方法的主要作用是构建事务的写入内容，以便后续的写操作可以知道要写哪些键。
+
+具体地，首先，我们检查给定键是否有锁以及锁是否对当前请求可见，如果锁存在并且其时间戳大于请求的版本号（意味着锁对当前请求不可见），我们将错误信息设置为 KeyError 并返回响应，标记该请求需要重试。
+```go
+lock, err := txn.GetLock(key)
+if err != nil {
+	return nil, nil, err
+} else if lock != nil {
+	if lock.Ts > g.request.Version {
+		response.Error = &kvrpcpb.KeyError{Locked: lock.Info(key), Retryable: "lock is unvisible"}
+		return response, nil, nil
+	}
+}
+```
+
+其次，调用 `txn.GetValue(key)` 从存储中获取键的已提交值，并在响应中返回值或标记为未找到，从而确保读取操作的正确性和一致性。
+```go
+value, err := txn.GetValue(key)
+if err != nil {
+	return nil, nil, err
+}
+if value == nil {
+	response.NotFound = true
+} else {
+	response.Value = value
+}
+```
+
+#### `kv/transaction/commands/prewrite.go`: 
+
+这部分，我们实现了 `prewriteMutation` 中相关内容，来处理事务的预写阶段。
+
+具体实现步骤如下：
+
+   - **写冲突检查**：通过调用 `txn.MostRecentWrite` 方法检查当前事务的写入是否与其他事务冲突。如果存在冲突，返回写冲突错误。
+      ```go
+         _, commitTs, err := txn.MostRecentWrite(key)
+      if err != nil {
+         return nil, err
+      }
+      if commitTs > txn.StartTS {
+         return &kvrpcpb.KeyError{Conflict: &kvrpcpb.WriteConflict{
+            StartTs:    txn.StartTS,
+            ConflictTs: commitTs,
+            Key:        key,
+            Primary:    p.request.PrimaryLock,
+         }}, nil
+      }
+      ```
+   - **锁检查**：通过调用 `txn.GetLock` 方法检查键是否被锁定。如果被锁定且锁定的事务与当前事务不同，返回锁错误。
+      ```go
+      lock, err := txn.GetLock(key)
+      if err != nil {
+         return nil, err
+      }
+      if lock != nil && lock.Ts != txn.StartTS {
+         return &kvrpcpb.KeyError{Locked: lock.Info(key)}, nil
+      }
+      ```
+   - **写锁和值**：根据变更的操作类型（插入或删除），在事务中写入相应的值，并在键上放置锁。
+      ```go
+      var writeKind mvcc.WriteKind
+      switch mut.Op {
+      case kvrpcpb.Op_Put:
+         writeKind = mvcc.WriteKindPut
+         txn.PutValue(key, mut.Value)
+      case kvrpcpb.Op_Del:
+         writeKind = mvcc.WriteKindDelete
+         txn.DeleteValue(key)
+      }
+      lock = &mvcc.Lock{
+         Primary: p.request.PrimaryLock,
+         Ts:      txn.StartTS,
+         Kind:    writeKind,
+      }
+      txn.PutLock(key, lock)
+      ```
+
+这部分代码实现了两阶段提交中的第一阶段，即预写阶段，确保在实际提交前不会发生冲突或锁定问题。
 
 #### `kv/transaction/commands/commit.go`:
 
-#### `kv/transaction/commands/prewrite.go`:
+在这部分中，我们实现第二阶段，也即提交阶段，来处理事务的提交操作。
+
+首先我们检查 `commitTs`（提交时间戳）是否有效。在这个上下文中，commitTs 应该大于 startTs（开始时间戳）。如果不是，我们返回错误信息。
+```go
+if commitTs <= c.startTs {
+	return nil, fmt.Errorf("invalid commitTs: %v, should be greater thanstartTs: %v", commitTs, c.startTs)
+}
+```
+随后，我们检查键被锁定的情况。因为在事务的提交过程中，对于每个事务涉及的键，都需要检查其锁定状态。这部分中，给定的代码已经能实现大部分功能，我们补充完善其中的一部分，获取当前事务对指定键 `key` 的写入操作，如果在获取过程中出现错误，那么就直接返回 `nil` 和错误。
+
+完成了以上三个文件中的修改，我们运行 `make lab2P1` 进行测试，测试通过。
+
+```go
+if lock == nil || lock.Ts != txn.StartTS {
+
+	if lock == nil || lock.Ts != txn.StartTS {
+		existingWrite, _, err := txn.CurrentWrite(key)
+		if err != nil {
+			return nil, err
+		}
+		if existingWrite == nil {
+			// provided code ...
+		}
+	}
+}
+```
 
 ### P2
 
