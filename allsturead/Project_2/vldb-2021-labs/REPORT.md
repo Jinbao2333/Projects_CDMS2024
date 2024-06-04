@@ -86,7 +86,7 @@ Lab 1 中剩余的 P1 工作主要集中在实现`kv/raftstore`目录下的几�
 
 需要注意的是，正在检查的 peer 可能是一个 leader，但它可能会在后面变为 follower。无论 peer 是否为 leader 都没有关系。如果它不是 leader，那么提议的命令日志条目就不能被提交。在 `peerMsgHandler` 的 `ctx` 中有一些参考信息。
 
-下面是这部分的补全代码实现。
+下面是我们这部分的补全代码实现。
 
 ```go
 func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) {
@@ -181,24 +181,24 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 #### 主要任务
 
 1. **实现 `Get` 命令**：
-   - 实现 `kv/transaction/commands/get.go` 文件中缺少的代码，以支持点查询操作。
+   - 在 `kv/transaction/commands/get.go` 文件中实现，以支持点查询操作。
 
 2. **实现 `Prewrite` 和 `Commit` 命令**：
    - `Prewrite` 阶段：将所有键的预写锁记录在 `lock column family` 中；
    - `Commit` 阶段：首先提交主键，将写记录存入 `write column family` 并解锁预写锁；
-   - 这些代码在 `kv/transaction/commands/prewrite.go` 和 `kv/transaction/commands/commit.go` 中实现；
-   - 注意处理重复请求和读写冲突！
+   - 在 `kv/transaction/commands/prewrite.go` 和 `kv/transaction/commands/commit.go` 中实现；
+   - *注意处理重复请求和读写冲突！*
 
 3. **实现 `Rollback` 和 `CheckTxnStatus` 命令**：
    - `Rollback`：用于解锁键并记录回滚信息；
    - `CheckTxnStatus`：查询特定事务的主键锁状态；
-   - 这些代码在 `kv/transaction/commands/rollback.go` 和 `kv/transaction/commands/checkTxn.go` 中实现；
-   - 处理锁不存在的情况和重复请求。
+   - 在 `kv/transaction/commands/rollback.go` 和 `kv/transaction/commands/checkTxn.go` 中实现；
+   - *处理锁不存在的情况和重复请求。*
 
 4. **实现 `ResolveLock` 命令**：
    - `Resolve`：用于根据事务状态决定提交或回滚锁；
-   - 这些代码在 `kv/transaction/commands/resolve.go` 中实现；
-   - 确保输入请求参数中事务状态已决定。
+   - 在 `kv/transaction/commands/resolve.go` 中实现；
+   - *确保输入请求参数中事务状态已决定。*
 
 #### 文件路径与测试节点
 
@@ -267,6 +267,21 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 4. **响应客户端**：
    - 当事务命令成功应用后，服务器会将处理结果返回给客户端，完成整个请求处理流程。
 
+#### `kv/transaction/commands/get.go`: 
+
+#### `kv/transaction/commands/commit.go`:
+
+#### `kv/transaction/commands/prewrite.go`:
+
+### P2
+
+#### `kv/transaction/commands/rollback.go`:
+
+#### `kv/transaction/commands/checkTxn.go`:
+
+### P3
+
+#### `kv/transaction/commands/resolve.go`:
 
 
 
