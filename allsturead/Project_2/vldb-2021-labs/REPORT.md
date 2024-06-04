@@ -304,46 +304,45 @@ if value == nil {
 
    - **写冲突检查**：通过调用 `txn.MostRecentWrite` 方法检查当前事务的写入是否与其他事务冲突。如果存在冲突，返回写冲突错误。
       ```go
-         _, commitTs, err := txn.MostRecentWrite(key)
-      if err != nil {
+      if write, commitTs, err := txn.MostRecentWrite(key); err != nil {
          return nil, err
-      }
-      if commitTs > txn.StartTS {
-         return &kvrpcpb.KeyError{Conflict: &kvrpcpb.WriteConflict{
-            StartTs:    txn.StartTS,
-            ConflictTs: commitTs,
-            Key:        key,
-            Primary:    p.request.PrimaryLock,
-         }}, nil
+      } else if write != nil && commitTs >= txn.StartTS {
+         return &kvrpcpb.KeyError{
+            Conflict: &kvrpcpb.WriteConflict{Key: key, StartTs: txn.StartTS, Primary: p.request.PrimaryLock, ConflictTs: commitTs, },
+         }, nil
       }
       ```
    - **锁检查**：通过调用 `txn.GetLock` 方法检查键是否被锁定。如果被锁定且锁定的事务与当前事务不同，返回锁错误。
       ```go
-      lock, err := txn.GetLock(key)
-      if err != nil {
+      if keyLock, err = txn.GetLock(key); err != nil {
          return nil, err
-      }
-      if lock != nil && lock.Ts != txn.StartTS {
-         return &kvrpcpb.KeyError{Locked: lock.Info(key)}, nil
+      } else if keyLock != nil && keyLock.Ts != txn.StartTS {
+         return &kvrpcpb.KeyError{
+            Locked: keyLock.Info(key),
+            Conflict: &kvrpcpb.WriteConflict{
+               Key: key,
+               StartTs: txn.StartTS,
+               Primary: p.request.PrimaryLock,
+               ConflictTs: keyLock.Ts,
+            },
+         }, nil
       }
       ```
    - **写锁和值**：根据变更的操作类型（插入或删除），在事务中写入相应的值，并在键上放置锁。
       ```go
-      var writeKind mvcc.WriteKind
+      keyLock = &mvcc.Lock{
+         Primary: p.request.PrimaryLock,
+         Ts: txn.StartTS,
+         Ttl: p.request.LockTtl,
+         Kind: mvcc.WriteKind(mut.Op + 1),
+      }
+      txn.PutLock(key, keyLock)
       switch mut.Op {
       case kvrpcpb.Op_Put:
-         writeKind = mvcc.WriteKindPut
          txn.PutValue(key, mut.Value)
       case kvrpcpb.Op_Del:
-         writeKind = mvcc.WriteKindDelete
          txn.DeleteValue(key)
       }
-      lock = &mvcc.Lock{
-         Primary: p.request.PrimaryLock,
-         Ts:      txn.StartTS,
-         Kind:    writeKind,
-      }
-      txn.PutLock(key, lock)
       ```
 
 这部分代码实现了两阶段提交中的第一阶段，即预写阶段，确保在实际提交前不会发生冲突或锁定问题。
@@ -360,8 +359,6 @@ if commitTs <= c.startTs {
 ```
 随后，我们检查键被锁定的情况。因为在事务的提交过程中，对于每个事务涉及的键，都需要检查其锁定状态。这部分中，给定的代码已经能实现大部分功能，我们补充完善其中的一部分，获取当前事务对指定键 `key` 的写入操作，如果在获取过程中出现错误，那么就直接返回 `nil` 和错误。
 
-完成了以上三个文件中的修改，我们运行 `make lab2P1` 进行测试，测试通过。
-
 ```go
 if lock == nil || lock.Ts != txn.StartTS {
 
@@ -377,11 +374,58 @@ if lock == nil || lock.Ts != txn.StartTS {
 }
 ```
 
+完成了以上三个文件中的修改，我们运行 `make lab2P1` 进行测试，测试成功通过。
+
 ### P2
 
 #### `kv/transaction/commands/rollback.go`:
 
-#### `kv/transaction/commands/checkTxn.go`:
+这部分中主要实现了事务的回滚操作，即在事务的预写阶段或提交阶段出现问题时，需要回滚事务，解锁键并记录回滚信息。
+
+给定代码中，先检查是否存在写入记录。这里 `existingWrite` 是已存在的写入记录，如果它为 `nil`，那么就表示不存在写入记录。
+
+如果不存在写入记录，那么就会创建一个新的回滚记录，并将其插入到事务中，并且设置回滚记录的开始时间戳为事务的开始时间戳，然后再将新创建的回滚记录插入到事务中。具体实现如下。
+
+```go
+write := mvcc.Write{
+   StartTS: txn.StartTS,
+   Kind: mvcc.WriteKindRollback
+}
+txn.PutWrite(key, txn.StartTS, &write)
+```
+
+#### `kv/transaction/commands/checkTxn.go`: 
+
+这部分中主要实现了事务状态检查操作，即查询特定事务的主键锁状态。
+
+首先，在第一部分中，我们创建一个回滚写入记录并放入事务 `txn` 中。然后，如果锁的类型是 `mvcc.WriteKindPut`，会删除对应的值。无论如何，它都会删除锁，并将响应动作设置为 `kvrpcpb.Action_TTLExpireRollback`，表示该事务已经因为 TTL 过期而被回滚。
+
+   ```go
+	if lock != nil && lock.Ts == txn.StartTS {
+		if physical(lock.Ts)+lock.Ttl < physical(c.request.CurrentTs) {
+			// DONE
+			// YOUR CODE HERE (lab2).
+			// Lock has expired, try to rollback it. `mvcc.WriteKindRollback` could be used to
+			// represent the type. Try using the interfaces provided by `mvcc.MvccTxn`.
+			
+         // ...
+
+			rollbackWrite := &mvcc.Write{
+				StartTS: lock.Ts, Kind: mvcc.WriteKindRollback,
+			}
+			txn.PutWrite(key, lock.Ts, rollbackWrite)
+			
+			if lock.Kind == mvcc.WriteKindPut {
+				txn.DeleteValue(key)
+			}
+			
+			txn.DeleteLock(key)
+			response.Action = kvrpcpb.Action_TTLExpireRollback
+		}
+      // ...
+   ```
+
+完成了以上两个文件中的修改，我们运行 `make lab2P2` 进行测试，遇到了一些问题，测试未能成功通过。经过逐步排查，发现在 P1 部分的 `kv/transaction/commands/prewrite.go` 文件中存在一些问题，这个问题并没有在 P1 部分的测试中暴露出来，但在 P2 部分的测试中就会出现问题。将该问题修改以后就可以成功通过 P2 部分的测试了。
 
 ### P3
 

@@ -71,7 +71,7 @@ func commitKey(key []byte, commitTs uint64, txn *mvcc.MvccTxn, response interfac
 			if err != nil {
 				return nil, err
 			}
-			if existingWrite == nil {
+			if existingWrite == nil || existingWrite.Kind == mvcc.WriteKindRollback {
 				respValue := reflect.ValueOf(response)
 				keyError := &kvrpcpb.KeyError{Retryable: fmt.Sprintf("lock not found for key %v", key)}
 				reflect.Indirect(respValue).FieldByName("Error").Set(reflect.ValueOf(keyError))
