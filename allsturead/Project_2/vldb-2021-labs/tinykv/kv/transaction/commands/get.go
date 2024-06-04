@@ -38,12 +38,11 @@ func (g *Get) Read(txn *mvcc.RoTxn) (interface{}, [][]byte, error) {
 
 	lock, err := txn.GetLock(key)
 	if err != nil {
-		return nil, nil, err
-	} else if lock != nil {
-		if lock.Ts > g.request.Version {
-			response.Error = &kvrpcpb.KeyError{Locked: lock.Info(key), Retryable: "lock is unvisible"}
-			return response, nil, nil
-		}
+		return response, nil, err
+	}
+	if lock != nil && lock.IsLockedFor(key, g.startTs, response) {
+		response.Error.Locked = lock.Info(key)
+		return response, nil, nil
 	}
 
 	// DONE

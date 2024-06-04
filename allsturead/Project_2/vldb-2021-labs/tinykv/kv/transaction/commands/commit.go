@@ -32,11 +32,13 @@ func (c *Commit) PrepareWrites(txn *mvcc.MvccTxn) (interface{}, error) {
 	// YOUR CODE HERE (lab2).
 	// Check if the commitTs is invalid, the commitTs must be greater than the transaction startTs. If not
 	// report unexpected error.
-	if commitTs <= c.startTs {
-		return nil, fmt.Errorf("invalid commitTs: %v, should be greater than startTs: %v", commitTs, c.startTs)
-	}
-	
+
 	response := new(kvrpcpb.CommitResponse)
+	if commitTs <= txn.StartTS {
+		response.Error = &kvrpcpb.KeyError{
+			Retryable: fmt.Sprintf("%vunexpected error: commitTs must be greater than transaction startTs", txn.StartTS)}
+		return response, fmt.Errorf("")
+	}
 
 	// Commit each key.
 	for _, k := range c.request.Keys {
@@ -66,18 +68,18 @@ func commitKey(key []byte, commitTs uint64, txn *mvcc.MvccTxn, response interfac
 		// Key is locked by a different transaction, or there is no lock on the key. It's needed to
 		// check the commit/rollback record for this key, if nothing is found report lock not found
 		// error. Also the commit request could be stale that it's already committed or rolled back.
-		if lock == nil || lock.Ts != txn.StartTS {
-			existingWrite, _, err := txn.CurrentWrite(key)
-			if err != nil {
-				return nil, err
-			}
-			if existingWrite == nil || existingWrite.Kind == mvcc.WriteKindRollback {
-				respValue := reflect.ValueOf(response)
-				keyError := &kvrpcpb.KeyError{Retryable: fmt.Sprintf("lock not found for key %v", key)}
-				reflect.Indirect(respValue).FieldByName("Error").Set(reflect.ValueOf(keyError))
-				return response, nil
-			}
+		currentWrite, _, err := txn.CurrentWrite(key)
+		if err != nil {
+			return nil, err
 		}
+		
+		if currentWrite == nil || currentWrite.Kind == mvcc.WriteKindRollback {
+			keyError := &kvrpcpb.KeyError{Retryable: fmt.Sprintf("lock not found for key %v", key)}
+			reflect.Indirect(reflect.ValueOf(response)).FieldByName("Error").Set(reflect.ValueOf(keyError))
+			return response, nil
+		}
+		
+		return nil, nil
 	}
 
 	// Commit a Write object to the DB

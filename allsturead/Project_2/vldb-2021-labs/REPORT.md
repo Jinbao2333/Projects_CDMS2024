@@ -270,16 +270,15 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 #### `kv/transaction/commands/get.go`: 
 在 `kv/transaction/commands/get.go` 文件中，我们需要实现 `GetCommand` 结构体的 `PrepareWrites` 方法。这个方法的主要作用是构建事务的写入内容，以便后续的写操作可以知道要写哪些键。
 
-具体地，首先，我们检查给定键是否有锁以及锁是否对当前请求可见，如果锁存在并且其时间戳大于请求的版本号（意味着锁对当前请求不可见），我们将错误信息设置为 KeyError 并返回响应，标记该请求需要重试。
+具体地，首先，我们尝试获取一个键的锁，并检查这个锁是否存在并且被锁定。如果存在并且被锁定，那么就将锁的信息设置在响应中并返回。如果在获取锁的过程中发生错误，那么就立即返回这个错误。
 ```go
 lock, err := txn.GetLock(key)
 if err != nil {
-	return nil, nil, err
-} else if lock != nil {
-	if lock.Ts > g.request.Version {
-		response.Error = &kvrpcpb.KeyError{Locked: lock.Info(key), Retryable: "lock is unvisible"}
-		return response, nil, nil
-	}
+	return response, nil, err
+}
+if lock != nil && lock.IsLockedFor(key, g.startTs, response) {
+	response.Error.Locked = lock.Info(key)
+	return response, nil, nil
 }
 ```
 
@@ -357,21 +356,25 @@ if commitTs <= c.startTs {
 	return nil, fmt.Errorf("invalid commitTs: %v, should be greater thanstartTs: %v", commitTs, c.startTs)
 }
 ```
-随后，我们检查键被锁定的情况。因为在事务的提交过程中，对于每个事务涉及的键，都需要检查其锁定状态。这部分中，给定的代码已经能实现大部分功能，我们补充完善其中的一部分，获取当前事务对指定键 `key` 的写入操作，如果在获取过程中出现错误，那么就直接返回 `nil` 和错误。
+随后，我们检查键被锁定的情况。首先检查了是否存在对应的锁。如果不存在锁，或者锁的时间戳与事务的开始时间戳不匹配，那么就表示键被其他事务锁定，或者键上没有锁。
+
+在这种情况下，我们检查键的提交/回滚记录。如果没有找到记录，或者找到的记录是回滚类型，那么就会返回一个未找到锁的错误。同时，代码也会考虑到提交请求可能已经过时，也就是说，键可能已经被提交或回滚了。
+
+如果存在对应的锁，并且锁的时间戳与事务的开始时间戳匹配，那么，创建一个新的写入对象，并将其提交到数据库中。这个写入对象的开始时间戳是事务的开始时间戳，类型是锁的类型。
 
 ```go
-if lock == nil || lock.Ts != txn.StartTS {
-
-	if lock == nil || lock.Ts != txn.StartTS {
-		existingWrite, _, err := txn.CurrentWrite(key)
-		if err != nil {
-			return nil, err
-		}
-		if existingWrite == nil {
-			// provided code ...
-		}
-	}
+currentWrite, _, err := txn.CurrentWrite(key)
+if err != nil {
+	return nil, err
 }
+	
+if currentWrite == nil || currentWrite.Kind == mvcc.WriteKindRollback {
+   keyError := &kvrpcpb.KeyError{Retryable: fmt.Sprintf("lock not found for key %v", key)}
+	reflect.Indirect(reflect.ValueOf(response)).FieldByName("Error").Set(reflect.ValueOf(keyError))
+	return response, nil
+}
+		
+return nil, nil
 ```
 
 完成了以上三个文件中的修改，我们运行 `make lab2P1` 进行测试，测试成功通过。
@@ -431,7 +434,35 @@ txn.PutWrite(key, txn.StartTS, &write)
 
 #### `kv/transaction/commands/resolve.go`:
 
+最后的 P3 部分，我们需要实现的是 `ResolveLock` 命令，用于根据事务状态决定提交或回滚锁。
 
+首先我们检查锁的时间戳是否小于或等于提交的时间戳，并且请求的开始版本是否小于或等于锁的时间戳。如果这两个条件都满足，那么就会尝试提交键。
+
+commitKey(kl.Key, commitTs, txn, response) 这行代码是在尝试提交键。kl.Key 是需要提交的键，commitTs 是提交的时间戳，txn 是事务，response 是响应。如果提交失败，那么就会返回错误。
+
+如果上述条件不满足，那么就会尝试回滚键，具体和上述也是类似的，故不再赘述。
+
+```go
+if kl.Lock.Ts <= commitTs && rl.request.StartVersion <= kl.Lock.Ts {
+	_, err := commitKey(kl.Key, commitTs, txn, response)
+	if err != nil {
+		return nil, err
+	}
+} else {
+	_, err := rollbackKey(kl.Key, txn, response)
+	if err != nil {
+		return nil, err
+	}
+}
+```
+
+完成了以上文件中的修改，我们运行 `make lab2P3` 进行测试，测试成功通过。
+
+### P4
+
+P4 部分是最终测试，我们需要确保所有的事务命令都能够正确处理，以及能够正确处理冲突和重复请求。
+
+但是即便通过了 P3 部分的测试，我们信心满满地运行 P4 部分的测试时，却遇到了一些问题。经过排查，发现居然是在 P1 部分的 `get.go` 文件中的一个小问题导致的，具体地，在 `return` 时，错误地返回了一个 `nil`。将这颗“老鼠屎”修改后，我们再次运行 `make lab2P4` 进行测试，测试成功通过。这也告诫我们随时进行代码检查，不然回过头去排查问题将如大海捞针般难以找到问题所在。
 
 ## 错误记录
 1. 当我们第一次在本地进行 `make lab1P0` ，进行第一部分的评分时，出现了一些错误，报错信息如下。
@@ -465,3 +496,42 @@ txn.PutWrite(key, txn.StartTS, &write)
     查阅资料得知，遇到的问题是 Go 语言的模块代理（Go module proxy）无法访问。错误信息中的 `dial tcp: lookup proxy.golang.org on 10.255.255.254:53: server misbehaving` 表示在尝试访问 `proxy.golang.org` 时出现了问题。通过查阅资料得知这可能是由于网络问题，或者是因为环境中的 DNS 设置问题。
 
     此后查阅指导文档，尝试进行命令 `export GOPROXY=https://goproxy.io,direct` 将 Go 语言的模块代理服务器设置为 `https://goproxy.io`，当其无法使用时直接从源服务器获取依赖，便可以成功运行测试脚本了。
+
+2. 在进行 Lab 2 的 P4 部分测试时，部分样例出现了问题，具体报错信息局部如下。
+   ```bash
+   ...
+   === RUN   TestGetDeleted4B
+   --- PASS: TestGetDeleted4B (0.00s)
+   === RUN   TestGetLocked4B
+      commands4b_test.go:236:
+                  Error Trace:    commands4b_test.go:236
+                  Error:          Expected nil, but got: &kvrpcpb.KeyError{Locked:(*kvrpcpb.LockInfo)(0xc000095260), Retryable:"lock is unvisible", Abort:"", Conflict:(*kvrpcpb.WriteConflict)(nil), XXX_NoUnkeyedLiteral:struct {}{}, XXX_unrecognized:[]uint8(nil), XXX_sizecache:0}
+                  Test:           TestGetLocked4B
+      commands4b_test.go:237:
+                  Error Trace:    commands4b_test.go:237
+                  Error:          Not equal:
+                                 expected: []byte{0x2a}
+                                 actual  : []byte(nil)
+
+                                 Diff:
+                                 --- Expected
+                                 +++ Actual
+                                 @@ -1,4 +1,2 @@
+                                 -([]uint8) (len=1) {
+                                 - 00000000  2a                           
+                        |*|
+                                 -}
+                                 +([]uint8) <nil>
+
+                  Test:           TestGetLocked4B
+   --- FAIL: TestGetLocked4B (0.00s)
+   panic: runtime error: invalid memory address or nil pointer dereference [recovered]
+         panic: runtime error: invalid memory address or nil pointer dereference
+   [signal SIGSEGV: segmentation violation code=0x1 addr=0x0 pc=0xb45f96]
+   ...
+   ```
+通过分析这份错误报告，我们可以初步判定一些问题，比如在运行 `commands4b_test.go` 文件时，测试期望得到的是一个值，但实际得到的是 `nil`。
+
+最后，测试出现了 panic，原因是出现了无效的内存地址或者空指针引用，这是一个运行时错误。这种错误通常是因为试图访问一个未被初始化（即 nil）的指针引用的内存地址，或者试图访问一个已经被释放的内存地址。
+
+结合了以上的内容，我们最终发现是由于 P1 部分的 `get.go` 文件中的一个小问题导致的，具体内容在上文已经阐述过了。最终经修改后再次运行 `make lab2P4` 进行测试，测试成功通过。
