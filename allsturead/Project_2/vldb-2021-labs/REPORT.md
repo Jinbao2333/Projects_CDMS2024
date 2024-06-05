@@ -56,7 +56,7 @@ ok      github.com/pingcap-incubator/tinykv/kv/server   8.569s
 
 Lab 1 中剩余的 P1 工作主要集中在实现`kv/raftstore`目录下的几个关键方法，这些方法主要用于确保 Raft 协议的正常运作、日志的持久化以及状态机的更新。
 
-#### 任务总览
+#### 主要任务
 
 1. **实现提议Raft命令**：
    - 在 `kv/raftstore/peer_msg_handler.go` 中，需要完成 `proposeRaftCommand` 方法的编码工作。这个方法是处理读写请求提案的核心，负责将客户端的读写请求转化为 Raft 协议可处理的命令形式，以便进行共识和日志复制。
@@ -463,6 +463,98 @@ if kl.Lock.Ts <= commitTs && rl.request.StartVersion <= kl.Lock.Ts {
 P4 部分是最终测试，我们需要确保所有的事务命令都能够正确处理，以及能够正确处理冲突和重复请求。
 
 但是即便通过了 P3 部分的测试，我们信心满满地运行 P4 部分的测试时，却遇到了一些问题。经过排查，发现居然是在 P1 部分的 `get.go` 文件中的一个小问题导致的，具体地，在 `return` 时，错误地返回了一个 `nil`。将这颗“老鼠屎”修改后，我们再次运行 `make lab2P4` 进行测试，测试成功通过。这也告诫我们随时进行代码检查，不然回过头去排查问题将如大海捞针般难以找到问题所在。
+
+## Lab 3
+
+该实验的主要目的是通过实现 Percolator 提交协议来理解和掌握分布式事务的工作原理，特别是如何在分布式环境中确保数据的一致性和原子性。
+
+### 主要任务
+
+1. **实现两阶段提交 *Two Phase Commit***：掌握 Prewrite 和 Commit 阶段的实现细节，确保数据在分布式存储中一致地写入和对外可见；
+2. **处理事务冲突和错误 *Lock Resolver***：通过实现 Lock Resolver 来处理事务冲突和错误情况，确保系统能够正确处理锁定和回滚操作；
+3. **使用 Failpoint 进行测试**：学习如何使用 Failpoint 工具进行错误注入和测试，以确保代码在异常情况下的健壮性。
+
+### 文件路径与测试
+
+1. **`GroupKeysByRegion`**：
+
+   在 `tinysql/store/tikv/region_cache.go` 文件中实现 `GroupKeysByRegion` 函数，使得对 Key 的操作能够根据 Region 缓存正确分组。
+
+2. **`Prewrite`**：
+   - 在 `tinysql/store/tikv/2pc.go` 中完成 `buildPrewriteRequest` 函数。
+   - 仿照 `handleSingleBatch` 函数实现 Commit 和 Rollback 的 `handleSingleBatch` 函数。
+
+3. **`Lock Resolver`**：
+   - 在 `tinysql/store/tikv/lock_resolver.go` 文件中完成 `getTxnStatus` 和 `resolveLock` 函数，使得 `ResolveLocks` 函数能够正常运行。
+   - 完成 `tinysql/store/tikv/snapshot.go` 文件中的 `tikvSnapshot.get` 函数，确保读请求遇到 Lock 时能够触发 `ResolveLocks` 函数并正常运行。
+
+4. **Failpoint 工具**：
+   - 通过 `make failpoint-enable` 和 `make failpoint-disable` 命令启用和禁用 Failpoint。
+
+完成以上任务后，通过运行 `make lab3` 来确保所有测试用例通过。使用 `go test {package path} -check.f ^{regex}$` 命令测试指定的单个或多个用例，验证代码的正确性。
+
+### 具体实现
+
+接下来我们逐一实现这些任务。
+
+#### `GroupKeysByRegion`: 
+
+根据实验文档我们了解到，Percolator 提交协议的两阶段提交包括 Prewrite 和 Commit 两个阶段。Prewrite 阶段是实际写入数据的阶段，Commit 阶段则是让数据对外可见的阶段。事务的成功以 Primary Key 为原子性标记，如果 Prewrite 阶段失败或是 Primary Key 的 Commit 阶段失败，那么就需要进行垃圾清理，将写入的事务回滚。
+
+在一个事务中，可能会涉及到不同区域的键。在对这些键进行写操作时，需要将它们发送到正确的区域才能处理。GroupKeysByRegion 函数就是用来处理这个问题的，它根据 region cache 将键按照区域分成多个 batch。然而，可能会出现因为缓存过期而导致对应的存储节点返回 Region Error 的情况，此时需要分割 batch 后重试。
+
+具体实现代码如下，重要部分的注释已经在代码中标注。
+
+```go
+func (c *RegionCache) GroupKeysByRegion(bo *Backoffer, keys [][]byte, filter func(key, regionStartKey []byte) bool) (map[RegionVerID][][]byte, RegionVerID, error) {
+	// DONE
+	// YOUR CODE HERE (lab3).
+	// Initialize a map to hold the groups of keys by region
+	keyGroups := make(map[RegionVerID][][]byte)
+	var firstRegionID RegionVerID
+	var lastKeyLocation *KeyLocation
+
+	for index, key := range keys {
+		// If the last key location is nil or does not contain the current key
+		if lastKeyLocation == nil || !lastKeyLocation.Contains(key) {
+			var err error
+			lastKeyLocation, err = c.LocateKey(bo, key)
+			if err != nil {
+				// If there's an error, return it immediately
+				return nil, firstRegionID, errors.Trace(err)
+			}
+			// If there's a filter and the key is filtered, skip this key
+			if filter != nil && filter(key, lastKeyLocation.StartKey) {
+				continue
+			}
+		}
+		regionID := lastKeyLocation.Region
+		// If this is the first key, set the first region ID
+		if index == 0 {
+			firstRegionID = regionID
+		}
+		keyGroups[regionID] = append(keyGroups[regionID], key)
+	}
+
+	return keyGroups, firstRegionID, nil
+}
+```
+
+#### `Prewrite`: 
+
+##### `buildPrewriteRequest`:
+
+##### `handleSingleBatch`:
+
+#### `Lock Resolver`:
+
+##### `getTxnStatus`:
+
+##### `resolveLock`:
+
+##### `tikvSnapshot.get`:
+
+#### `Failpoint 工具`:
 
 ## 错误记录
 1. 当我们第一次在本地进行 `make lab1P0` ，进行第一部分的评分时，出现了一些错误，报错信息如下。
