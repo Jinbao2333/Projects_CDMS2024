@@ -132,8 +132,9 @@ func (c *twoPhaseCommitter) initKeysAndMutations() error {
 		// You need to build the mutations from membuffer here
 		if len(v) > 0 {
 			// `len(v) > 0` means it's a put operation.
+			// DONE
 			// YOUR CODE HERE (lab3).
-			//panic("YOUR CODE HERE")
+			
 			if tablecodec.IsUntouchedIndexKValue(k, v) {
 				return nil
 			}
@@ -143,8 +144,8 @@ func (c *twoPhaseCommitter) initKeysAndMutations() error {
 			putCnt++
 		} else {
 			// `len(v) == 0` means it's a delete operation.
+			// DONE
 			// YOUR CODE HERE (lab3).
-			//panic("YOUR CODE HERE")
 			mutations[string(k)] = &mutationEx{
 				pb.Mutation{
 					Op:  pb.Op_Del,

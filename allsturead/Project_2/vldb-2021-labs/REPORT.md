@@ -480,7 +480,7 @@ P4 部分是最终测试，我们需要确保所有的事务命令都能够正�
 
    在 `tinysql/store/tikv/region_cache.go` 文件中实现 `GroupKeysByRegion` 函数，使得对 Key 的操作能够根据 Region 缓存正确分组。
 
-2. **`Prewrite`**：
+2. **`Two Phase Commit`**：
    - 在 `tinysql/store/tikv/2pc.go` 中完成 `buildPrewriteRequest` 函数。
    - 仿照 `handleSingleBatch` 函数实现 Commit 和 Rollback 的 `handleSingleBatch` 函数。
 
@@ -540,21 +540,354 @@ func (c *RegionCache) GroupKeysByRegion(bo *Backoffer, keys [][]byte, filter fun
 }
 ```
 
-#### `Prewrite`: 
+#### `Two Phase Commit`: 
 
-##### `buildPrewriteRequest`:
+在这部分，我们需要在 `2pc.go` 文件中实现 Percolator 提交协议的两阶段提交。
 
-##### `handleSingleBatch`:
+两阶段提交协议分为预写（Prewrite）和提交（Commit），其中预写阶段实际写入数据，提交阶段使数据对外可见。事务的成功以主键（Primary Key）为原子性标记，当预写失败或主键提交失败时需要进行垃圾清理（Rollback），将写入的事务回滚。我们需要首先补全 `buildPrewriteRequest` 函数，然后仿照 `handleSingleBatch` 函数实现 Commit 和 Rollback 的 `handleSingleBatch` 函数。
 
-#### `Lock Resolver`:
+这部分需要补全的代码较多且分散，故下面我们解读补全代码的关键部分，不再解读得过于详细。
 
-##### `getTxnStatus`:
+1. **构建变更（Mutations）**
 
-##### `resolveLock`:
+   ```go
+   if len(v) > 0 {
+       if tablecodec.IsUntouchedIndexKValue(k, v) {
+           return nil
+       }
+       mutations[string(k)] = &mutationEx{
+           pb.Mutation{Op: pb.Op_Put, Key: k, Value: v},
+       }
+       putCnt++
+   } else {
+       mutations[string(k)] = &mutationEx{
+           pb.Mutation{
+               Op:  pb.Op_Del,
+               Key: k,
+           },
+       }
+       delCnt++
+   }
+   ```
+   
+   对于 `len(v) > 0` 的情况表示这是一个 put 操作。如果 key 和 value 是未修改的索引，则跳过这个变更。否则创建一个 `Op_Put` 类型的变更对象。
+   而对于 `len(v) == 0` 的情况，表示这是一个 delete 操作，那么我们创建一个 `Op_Del` 类型的变更对象。
 
-##### `tikvSnapshot.get`:
+2. **更新 keys 数组和统计信息**
 
-#### `Failpoint 工具`:
+   ```go
+   keys = append(keys, k)
+   entrySize := len(k) + len(v)
+   if entrySize > int(kv.TxnEntrySizeLimit) {
+       return kv.ErrTxnTooLarge.GenWithStackByArgs(kv.TxnEntrySizeLimit, entrySize)
+   }
+   ```
+
+   这部分将键 `k` 添加到 keys 数组中，计算条目的大小并检查是否超过事务条目大小限制。
+
+3. **处理锁键（Lock Keys）**
+
+   ```go
+   for _, lockKey := range txn.lockKeys {
+       _, exists := mutations[string(lockKey)]
+       if !exists {
+           mutations[string(lockKey)] = &mutationEx{
+               pb.Mutation{
+                   Op:  pb.Op_Lock,
+                   Key: lockKey,
+               },
+           }
+       }
+   }
+   ```
+
+   遍历事务中的锁键，检查锁键是否已经存在于变更中。如果不存在，则为锁操作创建一个新的变更对象。
+
+4. **构建预写请求**
+
+   ```go
+   mutations := make([]*pb.Mutation, len(batch.keys))
+   for i, key := range batch.keys {
+       mutations[i] = &c.mutations[string(key)].Mutation
+   }
+   req := &pb.PrewriteRequest{
+       Mutations:    mutations,
+       PrimaryLock:  c.primaryKey,
+       StartVersion: c.startTS,
+       LockTtl:      c.lockTTL,
+   }
+   return tikvrpc.NewRequest(tikvrpc.CmdPrewrite, req)
+   ```
+
+   这部分为输入的键构建预写请求，确保主键不为空，并将变更对象添加到预写请求中。
+
+5. **提交阶段**
+
+   ```go
+   regionErr, err := resp.GetRegionError()
+   if err != nil {
+       return errors.Trace(err)
+   }
+
+   if regionErr != nil {
+       err = bo.Backoff(BoRegionMiss, errors.New(regionErr.String()))
+       if err != nil {
+           return errors.Trace(err)
+       }
+       return c.commitKeys(bo, batch.keys)
+   }
+   ```
+
+   构建并发送提交请求，处理响应中的 region 错误并进行重试。
+
+6. **回滚**
+
+   ```go
+   sender := NewRegionRequestSender(c.store.regionCache, c.store.client)
+   resp, err := sender.SendReq(bo, tikvrpc.NewRequest(tikvrpc.CmdBatchRollback, &pb.BatchRollbackRequest{
+       StartVersion: c.startTS,
+       Keys:         batch.keys,
+   }), batch.region)
+   ```
+
+   构建并发送回滚请求，使用 `RegionRequestSender` 发送请求并处理响应。
+
+7. **清理 Keys**
+
+   ```go
+   err := c.cleanupKeys(cleanupBo, c.keys)
+   if err != nil {
+       logutil.Logger(ctx).Info("2PC cleanup failed",
+           zap.Error(err),
+           zap.Uint64("txnStartTS", c.startTS))
+   }
+   ```
+
+   在事务失败后执行清理阶段，即调用 `cleanupKeys` 方法清理事务的键。
+
+8. **执行 prewrite**
+
+   ```go
+   err = c.prewriteKeys(prewriteBo, c.keys)
+   if err != nil {
+       logutil.Logger(ctx).Warn("2PC failed on prewrite",
+           zap.Error(err),
+           zap.Uint64("txtStartTs", c.startTS))
+   }
+   ```
+
+   执行预写阶段，调用 `prewriteKeys` 方法处理所有的键。
+
+9. **执行 commit**
+
+   ```go
+   err = c.commitKeys(commitBo, c.keys)
+   if err != nil {
+       if undeterminedErr := c.getUndeterminedErr(); undeterminedErr != nil {
+           logutil.Logger(ctx).Error("2PC commit res",
+               zap.Error(undeterminedErr))
+       }
+   }
+   ```
+
+   执行提交阶段，调用 `commitKeys` 方法处理所有的键，并且在返回错误之前检查是否存在未确定的错误，并记录日志。
+
+所以在这部分我们实现了 Percolator 提交协议的两阶段提交要求。每个阶段的关键步骤都按照要求进行了实现和处理，包括构建和处理预写请求、提交请求以及回滚请求，并且在每个阶段都处理了可能出现的错误和重试机制，从而确保了事务在分布式系统中的原子性和一致性。
+
+#### `Lock Resolver`: 
+
+在这部分中，我们需要在 `lock_resolver.go` 文件中实现 Lock Resolver，用于处理事务冲突和错误情况。
+
+具体地，我们需要实现 `getTxnStatus` 和 `resolveLock` 函数如下。
+
+##### `getTxnStatus`: 
+
+在这部分的代码中，我们对于 `getTxnStatus` 函数的实现主要是通过构建并发送一个 `CheckTxnStatusRequest` 请求到 TiKV 服务器，然后处理返回的响应。
+
+首先，我们创建一个 `CheckTxnStatusRequest` 请求，其中包含了主键、当前时间戳和事务 ID。这个请求会被发送到 TiKV 服务器以检查事务的状态。然后，使用 `LocateKey` 方法找到主键所在的区域。这个区域信息会被用于后续的请求发送，再使用 `SendReq` 方法发送请求到 TiKV 服务器，并获取响应。最后，获取响应中的区域错误。如果存在区域错误，那么这个请求需要被重新发送到新的区域。
+
+```go
+var status TxnStatus
+var req *tikvrpc.Request
+
+// build the request
+
+req = tikvrpc.NewRequest(tikvrpc.CmdCheckTxnStatus, &kvrpcpb.CheckTxnStatusRequest{
+   PrimaryKey: primary,
+   CurrentTs:  currentTS,
+   LockTs:     txnID,
+})
+for {
+   loc, err := lr.store.GetRegionCache().LocateKey(bo, primary)
+   if err != nil {
+      return status, errors.Trace(err)
+   }
+   resp, err := lr.store.SendReq(bo, req, loc.Region, readTimeoutShort)
+   if err != nil {
+      return status, errors.Trace(err)
+   }
+   regionErr, err := resp.GetRegionError()
+   if err != nil {
+      return status, errors.Trace(err)
+   }
+   if regionErr != nil {
+      err = bo.Backoff(BoRegionMiss, errors.New(regionErr.String()))
+      if err != nil {
+         return status, errors.Trace(err)
+      }
+      continue
+   }
+   if resp.Resp == nil {
+      return status, errors.Trace(ErrBodyMissing)
+   }
+   cmdResp := resp.Resp.(*kvrpcpb.CheckTxnStatusResponse)
+   logutil.BgLogger().Debug("cmdResp", zap.Bool("nil", cmdResp == nil))
+
+   // Assign status with response
+
+   status.action = cmdResp.Action
+   lockTtl := cmdResp.LockTtl
+   if lockTtl != 0 {
+      status.ttl = lockTtl
+   } else {
+      status.commitTS = cmdResp.CommitVersion
+      lr.saveResolved(txnID, status)
+   }
+   return status, nil
+}
+```
+
+在分布式数据库中，事务冲突是常见的问题。例如，两个事务可能同时尝试修改同一行的数据，这就会导致冲突。为了解决这种冲突，我们需要知道每个事务的状态，例如它是否已经提交，是否已经回滚，或者是否还在等待锁。
+
+这部分就是用于先获取事务的状态，从而确定如何解决冲突。例如，如果一个事务已经提交，那么其他尝试修改同一行的事务就需要等待或者回滚。如果一个事务已经回滚，那么其他事务就可以安全地修改数据。
+
+##### `resolveLock`: 
+
+这里主要是定义了 `LockResolver` 结构体的 `resolveLock` 方法，用于解决给定的事务锁。如果事务状态已提交，那么次级锁也应该被提交。
+
+首先，检查事务的大小是否超过了大事务阈值，如果超过了，那么就需要清理整个区域。然后，使用 `LocateKey` 方法找到锁所在的区域。如果出现错误，就返回错误。如果该区域已经被清理过，那么就直接返回。
+
+接着，构建一个 `ResolveLockRequest` 请求，其中包含了事务的开始版本。如果事务状态已提交，那么还需要包含提交版本。然后，使用 `SendReq` 方法发送请求，并获取响应。如果发送请求时出现错误，就返回错误。
+
+接下来获取响应中的区域错误。如果存在区域错误，就进行重试。如果在重试过程中出现错误，就继续返回错误。
+
+最后检查响应体是否存在。如果响应体不存在，就返回一个错误。接着获取响应体，并将其转换为 `ResolveLockResponse` 类型。如果响应中存在错误，就返回错误。
+
+```go
+// resolveLock resolve the lock for the given transaction status which is checked from primary key.
+// If status is committed, the secondary should also be committed.
+// If status is not committed and the
+func (lr *LockResolver) resolveLock(bo *Backoffer, l *Lock, status TxnStatus, cleanRegions map[RegionVerID]struct{}) error {
+   cleanWholeRegion := l.TxnSize >= bigTxnThreshold
+   for {
+      loc, err := lr.store.GetRegionCache().LocateKey(bo, l.Key)
+      if err != nil {
+         return errors.Trace(err)
+      }
+      if _, ok := cleanRegions[loc.Region]; ok {
+         return nil
+      }
+      var req *tikvrpc.Request
+      // build the request
+      lreq := &kvrpcpb.ResolveLockRequest{
+         StartVersion: l.TxnID,
+      }
+      if status.IsCommitted() {
+         lreq.CommitVersion = status.CommitTS()
+      }
+      req = tikvrpc.NewRequest(tikvrpc.CmdResolveLock, lreq)
+      resp, err := lr.store.SendReq(bo, req, loc.Region, readTimeoutShort)
+      if err != nil {
+         return errors.Trace(err)
+      }
+      regionErr, err := resp.GetRegionError()
+      if err != nil {
+         return errors.Trace(err)
+      }
+      if regionErr != nil {
+         err = bo.Backoff(BoRegionMiss, errors.New(regionErr.String()))
+         if err != nil {
+            return errors.Trace(err)
+         }
+         continue
+      }
+      if resp.Resp == nil {
+         return errors.Trace(ErrBodyMissing)
+      }
+      cmdResp := resp.Resp.(*kvrpcpb.ResolveLockResponse)
+      if keyErr := cmdResp.GetError(); keyErr != nil {
+         err = errors.Errorf("unexpected resolve err: %s, lock: %v", keyErr, l)
+         logutil.BgLogger().Error("resolveLock error", zap.Error(err))
+         return err
+      }
+      if cleanWholeRegion {
+         cleanRegions[loc.Region] = struct{}{}
+      }
+      return nil
+   }
+}
+```
+和这一部分的前者 `getTxnStatus` 一样，`resolveLock` 函数在处理事务冲突和错误时也起着关键作用。
+
+如果一个事务已经提交，那么 `resolveLock` 会将锁的 `CommitVersion` 设置为事务的提交时间戳，这意味着该锁已经被解决，其他事务可以安全地访问和修改数据。
+
+而如果未提交，那么 `resolveLock` 函数会发送一个 `ResolveLockRequest` 请求，请求 TiKV 解决这个锁。这个请求包含了事务的开始版本，TiKV 会根据这个版本信息来解决锁。从而解决了潜在的问题，确保了数据的一致性和原子性。
+
+##### `tikvSnapshot.get`: 
+
+在分布式数据库中，一个事务在读取数据时可能会遇到其他事务设置的锁。这时，就需要解决这个锁，才能继续读取数据。`tinySnapshot.get` 函数通过调用 `ResolveLocks` 函数来解决这个问题。
+
+结合注释内容，我们知道：
+
+如果遇到的锁属于一个正在提交的事务，那么 `ResolveLocks` 函数会返回一个 `msBeforeExpired`，表示在锁过期之前需要等待的时间。这时，`tinySnapshot.get` 函数会等待这段时间，然后再次尝试读取数据。
+
+如果遇到的锁属于一个已经死亡的事务，那么 `ResolveLocks` 函数会解决这个锁，然后 `tinySnapshot.get` 函数就可以继续读取数据。
+
+所以我们可以编写如下所示的代码。
+
+```go
+val := cmdGetResp.GetValue()
+   if keyErr := cmdGetResp.GetError(); keyErr != nil {
+      // If the key error is a lock, there are 2 possible cases:
+      //   1. The transaction is during commit, wait for a while and retry.
+      //   2. The transaction is dead with some locks left, resolve it.
+      lock, err := extractLockFromKeyErr(keyErr)
+      if err != nil {
+         return nil, errors.Trace(err)
+      }
+      msBeforeExpired, err := cli.ResolveLocks(bo, s.version.Ver, []*Lock{lock})
+      if err != nil {
+         return nil, errors.Trace(err)
+      }
+      if msBeforeExpired > 0 {
+         err = bo.BackoffWithMaxSleep(boTxnLockFast, int(msBeforeExpired), errors.New(keyErr.String()))
+         if err != nil {
+            return nil, errors.Trace(err)
+         }
+      }
+      continue
+   }
+```
+
+#### `Failpoint 工具与测试`: 
+
+Failpoint 工具是一个用于测试的工具，可以在代码中插入错误点，从而模拟一些异常情况，以确保代码在异常情况下的鲁棒性。
+我们通过命令 `make failpoint-enable` 和 `make failpoint-disable` 分别来启用和禁用 Failpoint。当然，在最终提交代码前，我们需要确保 Failpoint 是禁用的，否则代码会被修改，会导致测试不通过。
+
+在开启和关闭 Failpoint 两种状态下，我们得到了如下的评测结果，这也表明我们的代码在正常和异常情况下都能够正常通过测试了。
+
+> 关闭 Failpoint
+```bash
+jinbao@JinbaosLaptop:/mnt/d/Projects_CDMS2024/allsturead/Project_2/vldb-2021-labs/tinysql$ make lab3
+go test -timeout 600s ./store/tikv
+ok      github.com/pingcap/tidb/store/tikv      28.315s
+```
+> 开启 Failpoint
+```bash
+jinbao@JinbaosLaptop:/mnt/d/Projects_CDMS2024/allsturead/Project_2/vldb-2021-labs/tinysql$ make lab3
+go test -timeout 600s ./store/tikv
+ok      github.com/pingcap/tidb/store/tikv      (cached)
+```
 
 ## 错误记录
 1. 当我们第一次在本地进行 `make lab1P0` ，进行第一部分的评分时，出现了一些错误，报错信息如下。
