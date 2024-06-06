@@ -889,6 +889,85 @@ go test -timeout 600s ./store/tikv
 ok      github.com/pingcap/tidb/store/tikv      (cached)
 ```
 
+## Lab 4
+
+### Part a
+
+### 实验背景
+Lab4a 实验的背景是完整的 SQL 全链路过程，从客户端发送 SQL 请求，到在分布式 KV 数据库中进行数据写入的全过程。这个过程涉及多个模块和步骤，包括 SQL 解析、优化、执行、以及将事务提交到存储层。
+
+从介绍中我们可以得知如下 SQL 执行链路：
+![SQL 执行框架](/allsturead/Project_2/vldb-2021-labs/images/SQL_Layer_Exec.png)
+
+一条 SQL 语句的处理需要经过多个阶段。首先是协议解析和转换，接收并解析语句内容。然后通过 SQL 核心层进行逻辑处理，生成查询计划。最后，查询计划会在存储引擎中获取数据并进行计算，返回结果。文章详细介绍了这个框架，我们先进行总结。
+
+**协议解析和转换**：逻辑在 `server` 包中，包括连接的建立和管理（每个连接对应一个 Session）以及单个连接上的处理逻辑。本文主要关注后者，即已建立连接后的操作。
+
+**SQL 核心层**：这是 TiDB 中最复杂的部分，涉及 SQL 语句的解析、验证、优化、执行等多个环节。复杂性主要源自 SQL 语言本身的多样性、表意性以及底层分布式存储引擎的挑战。
+
+核心概念包括：
+- **Session**：处理 SQL 语句执行的环境。
+- **RecordSet**：表示结果集的抽象。
+- **Plan**：查询计划的抽象。
+- **LogicalPlan**：逻辑查询计划。
+- **PhysicalPlan**：物理查询计划。
+- **Executor**：执行查询计划的组件。
+
+**KV 接口层**：主要作用是路由请求到正确的 KV Server，处理返回消息，并处理各种异常逻辑。第二块是 KV Server 的具体实现，用于处理 SQL 分布式计算相关的逻辑。
+
+### 协议层入口/出口
+
+与客户端连接建立后，TiDB 会启动一个 Goroutine 监听端口，处理从客户端发来的包。此逻辑在 `server/conn.go` 中。
+
+```go
+445:    data, err := cc.readPacket()
+465:    if err = cc.dispatch(data); err != nil {
+```
+
+`clientConn.dispatch()` 方法处理接收到的请求，解析 MySQL 协议中的 Command 类型。对于 SQL 文本请求，处理函数是 `handleQuery()`。
+
+```go
+func (cc *clientConn) handleQuery(goCtx goctx.Context, sql string) (err error) {
+    850:  rs, err := cc.ctx.Execute(goCtx, sql)
+}
+```
+
+`Execute` 方法实现在 `server/driver_tidb.go` 中，调用 `tc.session.Execute` 进入 SQL 核心层。
+
+结果集通过 `writeResultset` 方法写回客户端。
+
+```go
+857:    err = cc.writeResultset(goCtx, rs[0], false, false)
+```
+
+### SQL 核心层
+
+**Session**：主要函数是 `Execute`，调用各种模块完成语句执行，并考虑 Session 环境变量。
+
+**Lexer & Yacc**：构成 Parser 模块，将文本解析成抽象语法树（AST）。
+
+```go
+session.go 699:  return s.parser.Parse(sql, charset, collation)
+```
+
+**制定查询计划及优化**：入口在 `compiler.Compile`，包括预处理、优化、构造执行计划。
+
+```go
+session.go 805:  stmt, err := compiler.Compile(goCtx, stmtNode)
+```
+
+**生成执行器**：将查询计划转换为执行器，构造 `ExecStmt` 结构，持有查询计划。
+
+```go
+executor/adpter.go 227:  e, err = a.buildExecutor(ctx)
+```
+
+**运行执行器**：TiDB 执行引擎采用 Volcano 模型，执行器之间调用 Next/NextChunk 方法获取结果。
+
+查询语句通过 `rs.Next(ctx)` 返回数据；非查询语句通过 `handleNoDelayExecutor` 立即执行。
+
+
+
 ## 错误记录
 1. 当我们第一次在本地进行 `make lab1P0` ，进行第一部分的评分时，出现了一些错误，报错信息如下。
     ```bash

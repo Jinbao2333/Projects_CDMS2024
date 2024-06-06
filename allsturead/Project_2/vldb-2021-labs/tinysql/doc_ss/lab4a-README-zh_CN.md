@@ -11,8 +11,8 @@
 - 1\. `server/conn.go`，当客户端连接到 TinySQL/TiDB 时，会开启一个 goroutine，会启动一个 `clientConn.Run` 函数，这个函数会不停的循环从客户端读取请求数据并执行。
 - 2\. `server/conn.go`，不同种类的请求会在 `clientConn.dispatch` 进行分类，我们主要关注的 SQL 请求会在这里被解析为 SQL 字符串，然后交给 `clientConn.handleQuery` 函数执行。
 - 3\. `session/session.go`，SQL 的执行会调用到 `TiDBContext.Execute` 函数进而调用 `session.Execute` 和 `session.execute`，`session.execute` 函数会负责一条 SQL 执行的生命周期，包括语法分析、优化、执行等阶段。
-    - 3.1. `session/session.go`，首先调用 `session.ParseSQL` 将 SQL 字符串转化为一颗或一些语法树，然后逐个执行。 
-    - 3.2. `executor/compiler.go`，`Compiler.Compile` 将一颗语法树进行优化，依次生成逻辑执行计划和物理执行计划。
+    - 3.1. `session/session.go`，首先调用 `session.ParseSQL` 将 SQL 字符串转化为一棵或一些语法树，然后逐个执行。 
+    - 3.2. `executor/compiler.go`，`Compiler.Compile` 将一棵语法树进行优化，依次生成逻辑执行计划和物理执行计划。
     - 3.3. `session/session.go`，通过 `session.executeStatement` 在 `runStmt` 函数中调用执行器的 `Exec` 函数。
     - 3.4. `session/tidb.go`，在执行完 Exec 函数后，如果没有出现错误，则调用 `session.StmtCommit` 方法将这一条语句 Commit 到整个事务所属的 membuffer 当中去。
 - 4\. `executor/adapter.go`，我们将 `ExecStmt.Exec` 函数的执行作为一个阶段，展开描述。
