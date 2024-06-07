@@ -37,7 +37,7 @@ P0 部分的主要任务就是补全 `standalone_storage.go` 部分的代码，�
 `standalone_storage.go`: 
 - `Reader`: 接受一个 `*kvrpcpb.Context` 类型的参数，表示一个 KV RPC 的上下文。这个方法的主要作用是创建一个 `StorageReader`，用于从存储中读取数据。在方法体中，首先调用 `s.db.NewTransaction(false)` 创建一个新的只读事务，然后将这个事务传递给 `NewBadgerReader` 函数，创建一个 `BadgerReader` 实例。`BadgerReader` 结构体是 `StorageReader` 接口的一个实现，用于从 Badger 数据库中读取数据。
 - `Write`: `Write` 方法的主要作用是将一批修改操作（由 `[]storage.Modify` 类型的参数 `batch` 表示）写入到存储中。每个 `storage.Modify` 对象包含一个 `Data` 字段，该字段可以是 `storage.Put` 或 `storage.Delete` 类型，分别表示插入/更新操作和删除操作。
-    
+  
     在方法体中，首先遍历 `batch` 参数中的所有修改操作。对于每一个修改操作，使用类型断言检查其 `Data` 字段的实际类型。
 
     如果 `Data` 字段的类型是 `storage.Put`，即一个插入或更新操作。在这种情况下，我们将 `Data` 字段转换为 `storage.Put` 类型，然后调用 `engine_util.PutCF` 函数将数据写入到数据库中。`PutCF` 函数接受四个参数：数据库实例、列族名称、键和值。如果写入操作失败，返回错误。
@@ -113,7 +113,7 @@ Lab 1 中剩余的 P1 工作主要集中在实现`kv/raftstore`目录下的几�
 
 ```go
 func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) {
-        panic("not implemented yet")
+    
         // YOUR CODE HERE (lab1).
         // Hint1: do `preProposeRaftCommand` check for the command, if the check fails, need to execute the
         // callback function and return the error results. `ErrResp` is useful to generate error response.
@@ -172,7 +172,7 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
         ```
 
 #### `kv/raftstore/peer_storage.go`:
-    
+
 ##### `SaveReadyState`: 
 
 首先，检查 "ready" 状态中的日志条目是否为空。如果不为空，那么就调用 `ps.Append(ready.Entries, raftWB)` 方法处理这些日志条目。这个方法会将日志条目追加到 Raft 的写入批次中；然后检查 `ps.raftState.LastIndex` 是否大于 0。如果大于 0，那么表示这个 peer 不是刚从 Raft 消息创建的，已经应用过快照，所以需要处理硬状态。接着，检查 "ready" 状态中的硬状态是否为空。如果不为空，那么就将其保存到 `ps.raftState.HardState` 中。这段代码根据 "ready" 状态的内容，更新 peer 的状态，确保 Raft 集群的状态一致。
@@ -931,7 +931,7 @@ ok      github.com/pingcap/tidb/store/tikv      (cached)
 Lab4a 实验的背景是完整的 SQL 全链路过程，从客户端发送 SQL 请求，到在分布式 KV 数据库中进行数据写入的全过程。这个过程涉及多个模块和步骤，包括 SQL 解析、优化、执行、以及将事务提交到存储层。
 
 从介绍中我们可以得知如下 SQL 执行链路：
-![SQL 执行框架](/allsturead/Project_2/vldb-2021-labs/images/SQL_Layer_Exec.png)
+![SQL 执行框架](https://github.com/Jinbao2333/Projects_CDMS2024/blob/main/allsturead/Project_2/vldb-2021-labs/images/SQL_Layer_Exec.png?raw=true)
 
 一条 SQL 语句的处理需要经过多个阶段。首先是协议解析和转换，接收并解析语句内容。然后通过 SQL 核心层进行逻辑处理，生成查询计划。最后，查询计划会在存储引擎中获取数据并进行计算，返回结果。文章详细介绍了这个框架，我们先进行总结。
 
@@ -1097,10 +1097,12 @@ executor/adpter.go 227:  e, err = a.buildExecutor(ctx)
    ```go
    err = ivs.initInsertColumns()
    ```
+   
 - 2\. `executor/insert.go`，`InsertExec.Open` 方法会被调用，有的 Insert 是根据 Select 的结果写入的（如上面的第二条 Insert），这种情况下 Insert 中嵌入了一条 Select 语句，`InsertExec` 中也嵌入了一个 `SelectionExec`，在 `Open` 的时候也需要通过 `SelectionExec.Open` 初始化 `SelectionExec`。
    ```go
    err = e.SelectExec.Open(ctx)
    ```
+   
 - 3\. `executor/insert.go`，`InsertExec.Next` 中对普通的 Insert 和根据 Select 的 Insert 会调用不同的函数。
     - 3.1 `executor/insert.go`，普通的 Insert 会使用 `insertRows` 函数进行处理（例子中第一条 Insert）。
       ```go
@@ -1110,10 +1112,12 @@ executor/adpter.go 227:  e, err = a.buildExecutor(ctx)
       ```go
       err = insertRowsFromSelect(ctx, e)
       ```
+    
 - 4\. `executor/insert.go`，`insertRows` 和 `insertRowsFromSelect` 都会使用 `InsertExec.exec` 来处理实际写入的数据，`InsertExec.exec` 中，每行数据都会使用被组合的 `InsertValues.addRecord` 进行写入。
-      ```go
+	```go
       _, err = e.InsertValues.addRecord(ctx, row)
-      ```
+  ```
+  
 - 5\. `executor/insert_common.go`，`InsertValues.addRecord` 会将输入的一行数据通过 `table/tables/tables.go` 中的 `TableCommon.AddRecord` 函数写入到 membuffer 当中。
    ```go
    recordID, err = e.Table.AddRecord(e.ctx, row, table.WithCtx(ctx))
@@ -1256,7 +1260,7 @@ ok      github.com/pingcap/tidb/executor        0.060
                   Error:          Not equal:
                                  expected: []byte{0x2a}
                                  actual  : []byte(nil)
-
+   
                                  Diff:
                                  --- Expected
                                  +++ Actual
@@ -1266,7 +1270,7 @@ ok      github.com/pingcap/tidb/executor        0.060
                         |*|
                                  -}
                                  +([]uint8) <nil>
-
+   
                   Test:           TestGetLocked4B
    --- FAIL: TestGetLocked4B (0.00s)
    panic: runtime error: invalid memory address or nil pointer dereference [recovered]
@@ -1275,6 +1279,7 @@ ok      github.com/pingcap/tidb/executor        0.060
    ...
    ```
    
+
 通过分析这份错误报告，我们可以初步判定一些问题，比如在运行 `commands4b_test.go` 文件时，测试期望得到的是一个值，但实际得到的是 `nil`。
 
 最后，测试出现了 panic，原因是出现了无效的内存地址或者空指针引用，这是一个运行时错误。这种错误通常是因为试图访问一个未被初始化（即 nil）的指针引用的内存地址，或者试图访问一个已经被释放的内存地址。
