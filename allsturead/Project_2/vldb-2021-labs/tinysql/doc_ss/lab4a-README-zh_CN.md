@@ -8,7 +8,7 @@
 
 ## 通用调用链路
 
-- 1\. `server/conn.go`，当客户端连接到 TinySQL/TiDB 时，会开启一个 goroutine，会启动一个 `clientConn.Run` 函数，这个函数会不停的循环从客户端读取请求数据并执行。
+- 1\. `server/conn.go`，当客户端连接到 TinySQL/TiDB 时，会开启一个 goroutine，会启动一个 `clientConn.Run` 函数，这个函数会不停循环从客户端读取请求数据并执行。
 - 2\. `server/conn.go`，不同种类的请求会在 `clientConn.dispatch` 进行分类，我们主要关注的 SQL 请求会在这里被解析为 SQL 字符串，然后交给 `clientConn.handleQuery` 函数执行。
 - 3\. `session/session.go`，SQL 的执行会调用到 `TiDBContext.Execute` 函数进而调用 `session.Execute` 和 `session.execute`，`session.execute` 函数会负责一条 SQL 执行的生命周期，包括语法分析、优化、执行等阶段。
     - 3.1. `session/session.go`，首先调用 `session.ParseSQL` 将 SQL 字符串转化为一棵或一些语法树，然后逐个执行。 

@@ -5,6 +5,9 @@ import (
 	"time"
 
 	"github.com/Connor1996/badger"
+	"github.com/pingcap/errors"
+	"github.com/pingcap/log"
+
 	"github.com/pingcap-incubator/tinykv/kv/config"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/message"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/meta"
@@ -17,8 +20,6 @@ import (
 	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_cmdpb"
 	rspb "github.com/pingcap-incubator/tinykv/proto/pkg/raft_serverpb"
 	"github.com/pingcap-incubator/tinykv/raft"
-	"github.com/pingcap/errors"
-	"github.com/pingcap/log"
 )
 
 func NotifyStaleReq(term uint64, cb *message.Callback) {
@@ -425,6 +426,7 @@ func (p *peer) HandleRaftReady(msgs []message.Msg, pdScheduler chan<- worker.Tas
 		}
 	}
 
+	// DONE
 	// YOUR CODE HERE (lab1). There are some missing code pars marked with `Hint` above, try to finish them.
 	// Hint2: Try to advance the states in the raft group of this peer after processing the raft ready.
 	//        Check about the `Advance` method in for the raft group.

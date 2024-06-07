@@ -50,6 +50,8 @@ import (
 
 	"github.com/pingcap/errors"
 	"github.com/pingcap/failpoint"
+	"go.uber.org/zap"
+
 	"github.com/pingcap/tidb/executor"
 	"github.com/pingcap/tidb/kv"
 	"github.com/pingcap/tidb/parser/mysql"
@@ -60,7 +62,6 @@ import (
 	"github.com/pingcap/tidb/util/hack"
 	"github.com/pingcap/tidb/util/logutil"
 	"github.com/pingcap/tidb/util/sqlexec"
-	"go.uber.org/zap"
 )
 
 const (
@@ -598,8 +599,10 @@ func (cc *clientConn) Run(ctx context.Context) {
 		}
 
 		// Hint: step I.2
+		// DONE
 		// YOUR CODE HERE (lab4)
-		panic("YOUR CODE HERE")
+		
+		err = cc.dispatch(ctx, data)
 		if err != nil {
 			if terror.ErrorEqual(err, io.EOF) {
 
@@ -697,8 +700,11 @@ func (cc *clientConn) dispatch(ctx context.Context, data []byte) error {
 		}
 		var err error
 		// Hint: step I.2
+		// DONE
 		// YOUR CODE HERE (lab4)
-		panic("YOUR CODE HERE")
+
+		err = cc.handleQuery(ctx, dataStr)
+
 		return err
 	case mysql.ComPing:
 		return cc.writeOK()
@@ -827,8 +833,9 @@ func (cc *clientConn) writeEOF(serverStatus uint16) error {
 func (cc *clientConn) handleQuery(ctx context.Context, sql string) (err error) {
 	var rss []ResultSet
 	// Hint: step I.3
+	// DONE
 	// YOUR CODE HERE (lab4)
-	panic("YOUR CODE HERE")
+	rss, err = cc.ctx.Execute(ctx, sql)
 
 	if err != nil {
 		return err
@@ -945,8 +952,9 @@ func (cc *clientConn) writeChunks(ctx context.Context, rs ResultSet, binary bool
 		var err error
 		// Here server.tidbResultSet implements Next method.
 		// Hint: step I.4.4
+		// DONE
 		// YOUR CODE HERE (lab4)
-		panic("YOUR CODE HERE")
+		err = rs.Next(ctx, req)
 		if err != nil {
 			return err
 		}

@@ -30,6 +30,8 @@ import (
 	"github.com/ngaut/pools"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/failpoint"
+	"go.uber.org/zap"
+
 	"github.com/pingcap/tidb/domain"
 	"github.com/pingcap/tidb/executor"
 	"github.com/pingcap/tidb/infoschema"
@@ -50,7 +52,6 @@ import (
 	"github.com/pingcap/tidb/util/chunk"
 	"github.com/pingcap/tidb/util/logutil"
 	"github.com/pingcap/tidb/util/sqlexec"
-	"go.uber.org/zap"
 )
 
 // Session context, it is consistent with the lifecycle of a client connection.
@@ -585,8 +586,9 @@ func (s *session) execute(ctx context.Context, sql string) (recordSets []sqlexec
 	)
 
 	// Hint: step I.3.1
+	// DONE
 	// YOUR CODE HERE (lab4)
-	panic("YOUR CODE HERE")
+	stmtNodes, warns, err = s.ParseSQL(ctx, sql, charsetInfo, collation)
 	if err != nil {
 		s.rollbackOnError(ctx)
 		logutil.Logger(ctx).Warn("parse SQL failed",
@@ -614,8 +616,9 @@ func (s *session) execute(ctx context.Context, sql string) (recordSets []sqlexec
 		}
 		var stmt *executor.ExecStmt
 		// Hint: step I.3.2
+		// DONE
 		// YOUR CODE HERE (lab4)
-		panic("YOUR CODE HERE")
+		stmt, err = compiler.Compile(ctx, stmtNode)
 		if stmt != nil {
 			logutil.Logger(ctx).Debug("stmt", zap.String("sql", stmt.Text))
 		}
@@ -632,8 +635,9 @@ func (s *session) execute(ctx context.Context, sql string) (recordSets []sqlexec
 		// Step3: Execute the physical plan.
 
 		// Hint: step I.3.3
+		// DONE
 		// YOUR CODE HERE (lab4)
-		panic("YOUR CODE HERE")
+		recordSets, err = s.executeStatement(ctx, connID, stmtNode, stmt, recordSets, multiQuery)
 		if err != nil {
 			return nil, err
 		}

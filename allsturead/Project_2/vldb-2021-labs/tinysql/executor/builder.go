@@ -23,6 +23,8 @@ import (
 	"github.com/cznic/mathutil"
 	"github.com/cznic/sortutil"
 	"github.com/pingcap/errors"
+	"github.com/pingcap/tipb/go-tipb"
+
 	"github.com/pingcap/tidb/distsql"
 	"github.com/pingcap/tidb/domain"
 	"github.com/pingcap/tidb/executor/aggfuncs"
@@ -37,7 +39,6 @@ import (
 	"github.com/pingcap/tidb/types"
 	"github.com/pingcap/tidb/util/admin"
 	"github.com/pingcap/tidb/util/chunk"
-	"github.com/pingcap/tipb/go-tipb"
 )
 
 // executorBuilder builds an Executor from a Plan.
@@ -248,8 +249,9 @@ func (b *executorBuilder) buildInsert(v *plannercore.Insert) Executor {
 	}
 	var err error
 	// Hint: step II.1
+	// DONE
 	// YOUR CODE HERE (lab4)
-	panic("YOUR CODE HERE")
+	err = ivs.initInsertColumns()
 	if err != nil {
 		b.err = err
 		return nil
@@ -559,8 +561,9 @@ func (b *executorBuilder) buildSelection(v *plannercore.PhysicalSelection) Execu
 func (b *executorBuilder) buildProjection(v *plannercore.PhysicalProjection) Executor {
 	var childExec Executor
 	// Hint: step III.1
+	// DONE
 	// YOUR CODE HERE (lab4)
-	panic("YOUR CODE HERE")
+	childExec = b.build(v.Children()[0])
 	if b.err != nil {
 		return nil
 	}

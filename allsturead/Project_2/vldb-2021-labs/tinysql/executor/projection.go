@@ -20,12 +20,13 @@ import (
 	"sync/atomic"
 
 	"github.com/pingcap/errors"
+	"go.uber.org/zap"
+
 	"github.com/pingcap/tidb/expression"
 	"github.com/pingcap/tidb/sessionctx"
 	"github.com/pingcap/tidb/util"
 	"github.com/pingcap/tidb/util/chunk"
 	"github.com/pingcap/tidb/util/logutil"
-	"go.uber.org/zap"
 )
 
 // This file contains the implementation of the physical Projection Operator:
@@ -196,8 +197,15 @@ func (e *ProjectionExec) parallelExecute(ctx context.Context, chk *chunk.Chunk) 
 	)
 	// Get the output from fetcher
 	// Hint: step III.3.1
+	// DONE
 	// YOUR CODE HERE (lab4)
-	panic("YOUR CODE HERE")
+	// The external thread continuously calls `ProjectionExec.Next`
+	// to get the processed data. During parallel processing
+	// , `ProjectionExec.parallelExecute` is called.
+	// In the `ProjectionExec.parallelExecute` function, data is
+	// retrieved from `ProjectionExec.outputCh` and written into
+	// the externally provided `Chunk` via `Chunk.SwapColumns`.
+	output, ok = <-e.outputCh // get the output from fetcher
 	if !ok {
 		return nil
 	}
@@ -340,8 +348,11 @@ func (f *projectionInputFetcher) run(ctx context.Context) {
 
 		// Send processed output to global output
 		// Hint: step III.3.2
+		// DONE
 		// YOUR CODE HERE (lab4)
-		panic("YOUR CODE HERE")
+        // Send the processed output to the global
+		// output channel
+		f.globalOutputCh <- output
 
 		requiredRows := atomic.LoadInt64(&f.proj.parentReqRows)
 		input.chk.SetRequiredRows(int(requiredRows), f.proj.maxChunkSize)
@@ -353,8 +364,13 @@ func (f *projectionInputFetcher) run(ctx context.Context) {
 
 		// Give the input and output back to worker
 		// Hint: step III.3.2
+		// DONE
 		// YOUR CODE HERE (lab4)
-		panic("YOUR CODE HERE")
+        // Return the input and output to the 
+		// worker thread by sending them to the
+		// worker's input and output channels.
+		targetWorker.inputCh <- input
+		targetWorker.outputCh <- output
 	}
 }
 
@@ -397,16 +413,18 @@ func (w *projectionWorker) run(ctx context.Context) {
 		)
 		// Get input data
 		// Hint: step III.3.3
+		// DONE
 		// YOUR CODE HERE (lab4)
-		panic("YOUR CODE HERE")
+		input = readProjectionInput(w.inputCh, w.globalFinishCh)
 		if input == nil {
 			return
 		}
 
 		// Get output data
 		// Hint: step III.3.3
+		// DONE
 		// YOUR CODE HERE (lab4)
-		panic("YOUR CODE HERE")
+		output = readProjectionOutput(w.outputCh, w.globalFinishCh)
 		if output == nil {
 			return
 		}
@@ -422,8 +440,9 @@ func (w *projectionWorker) run(ctx context.Context) {
 
 		// Give the input channel back
 		// Hint: step III.3.3
+		// DONE
 		// YOUR CODE HERE (lab4)
-		panic("YOUR CODE HERE")
+		w.inputGiveBackCh <- input
 	}
 }
 

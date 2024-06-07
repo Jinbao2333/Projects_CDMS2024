@@ -893,7 +893,8 @@ ok      github.com/pingcap/tidb/store/tikv      (cached)
 
 ### Part a
 
-### 实验背景
+#### 实验背景
+
 Lab4a 实验的背景是完整的 SQL 全链路过程，从客户端发送 SQL 请求，到在分布式 KV 数据库中进行数据写入的全过程。这个过程涉及多个模块和步骤，包括 SQL 解析、优化、执行、以及将事务提交到存储层。
 
 从介绍中我们可以得知如下 SQL 执行链路：
@@ -915,7 +916,7 @@ Lab4a 实验的背景是完整的 SQL 全链路过程，从客户端发送 SQL �
 
 **KV 接口层**：主要作用是路由请求到正确的 KV Server，处理返回消息，并处理各种异常逻辑。第二块是 KV Server 的具体实现，用于处理 SQL 分布式计算相关的逻辑。
 
-### 协议层入口/出口
+##### 协议层入口/出口
 
 与客户端连接建立后，TiDB 会启动一个 Goroutine 监听端口，处理从客户端发来的包。此逻辑在 `server/conn.go` 中。
 
@@ -940,7 +941,7 @@ func (cc *clientConn) handleQuery(goCtx goctx.Context, sql string) (err error) {
 857:    err = cc.writeResultset(goCtx, rs[0], false, false)
 ```
 
-### SQL 核心层
+##### SQL 核心层
 
 **Session**：主要函数是 `Execute`，调用各种模块完成语句执行，并考虑 Session 环境变量。
 
@@ -966,9 +967,202 @@ executor/adpter.go 227:  e, err = a.buildExecutor(ctx)
 
 查询语句通过 `rs.Next(ctx)` 返回数据；非查询语句通过 `handleNoDelayExecutor` 立即执行。
 
+#### 具体实现
 
+接下来我们结合实验文档的描述，解释一下我们的实现。
+
+- 1\. `server/conn.go`，当客户端连接到 TinySQL/TiDB 时，会开启一个 goroutine，会启动一个 `clientConn.Run` 函数，这个函数会不停循环从客户端读取请求数据并执行。
+- 2\. `server/conn.go`，不同种类的请求会在 `clientConn.dispatch` 进行分类，我们主要关注的 SQL 请求会在这里被解析为 SQL 字符串，然后交给 `clientConn.handleQuery` 函数执行。
+   ```go
+   ...
+   err = cc.dispatch(ctx, data)
+   ...
+   err = cc.handleQuery(ctx, dataStr)
+   ```
+- 3\. `session/session.go`，SQL 的执行会调用到 `TiDBContext.Execute` 函数进而调用 `session.Execute` 和 `session.execute`，`session.execute` 函数会负责一条 SQL 执行的生命周期，包括语法分析、优化、执行等阶段。
+    - 3.1. `session/session.go`，首先调用 `session.ParseSQL` 将 SQL 字符串转化为一棵或一些语法树，然后逐个执行。 
+    - 3.2. `executor/compiler.go`，`Compiler.Compile` 将一棵语法树进行优化，依次生成逻辑执行计划和物理执行计划。
+    - 3.3. `session/session.go`，通过 `session.executeStatement` 在 `runStmt` 函数中调用执行器的 `Exec` 函数。
+    - 3.4. `session/tidb.go`，在执行完 Exec 函数后，如果没有出现错误，则调用 `session.StmtCommit` 方法将这一条语句 Commit 到整个事务所属的 membuffer 当中去。
+    ```go
+    rss, err = cc.ctx.Execute(ctx, sql)
+    ```
+- 4\. `executor/adapter.go`，我们将 `ExecStmt.Exec` 函数的执行作为一个阶段，展开描述。
+    - 4.1. `executor/adapter.go`，`ExecStmt.Exec` 会调用 `ExecStmt.buildExecutor`，通过物理执行计划，构建执行器。
+      ```go
+      e, err = a.buildExecutor()
+      ```
+    - 4.2. `executor/adapter.go`，`Executor` 是一个层叠的结构，在调用顶层的 `Executor.Open` 方法后，会传递到其中的子 `Executor` 当中，这一操作会递归地将所有的 `Executor` 都初始化。
+      ```go
+      err = e.Open(ctx)
+      ```
+    - 4.3. `executor/adapter.go`，在 `ExecStmt.handleNoDelay` 中，如果这个 `Executor` 不会返回结果，那么它会在 `ExecStmt.handleNoDelayExecutor` 函数内部立即执行。
+      ```go
+      r, err := a.handleNoDelayExecutor(ctx, e)
+      ```
+        - 4.3.1. `executor/adapter.go`，在 `ExecStmt.handleNoDelayExecutor` 通过 `Next` 函数递归执行 `Executor`，这里会使用 `newFirstChunk` 函数来生成存储结果的 `Chunk`，`Chunk` 是一种使用 [Apache Arrow](https://arrow.apache.org/docs/format/Columnar.html#physical-memory-layout) 表达的数据格式。
+            ```go
+            err = e.Next(ctx, newFirstChunk(e))
+            ```
+    - 4.4. `executor/adapter.go`，如果这个 `Executor` 会返回结果，那么执行器会被层层返回到第 2 步的 `clientConn.handleQuery` 中，随后在 `clientConn.writeResultset` 中调用执行 `clientConn.writeChunks` 执行，这么做的原因是为了流式的将执行的结果返回给客户端，而不是将所有结果存放在 DBMS 的内存中。在 `clientConn.writeChunks` 中，会调用 `ResultSet.Next` 函数来执行，每次调用会返回一条数据，直到返回的数据为空，说明执行完成。
+      ```go
+      err = rs.Next(ctx, req)
+      ```
+- 5\. `executor/simple.go`，在 4.3.1 阶段中，存在几种特殊的执行器，执行入口在 `SimpleExec.Next` 里，这里主要列举和事务相关的 Begin/Commit/Rollback。
+    - 5.1. `executor/simple.go`，`SimpleExec.executeBegin` 会通过 `session/session.go` 中的 `session.NewTxn` 函数（被定义在 `sessionctx.Context` 接口中）来创建一个新的事务，如果此时这个 session 中有尚未提交的事务，`NewTxn` 会先提交事务后开启一个新事务。在开启新事务后，会通过 `session.Txn` 函数（也被定义在 `sessionctx.Context` 接口中）等待这个事务获取到 `startTS`。此外，begin 时会将环境变量中的 `mysql.ServerStatusInTrans` 设置为 `true`。
+      ```go
+      ...
+      err = e.ctx.NewTxn(ctx)
+      ...
+      _, err = e.ctx.Txn(true)
+      ```
+    - 5.2. `executor/simple.go`，`SimpleExec.executeCommit` 会将 5.1 中的 `mysql.ServerStatusInTrans` 变量设置为 `false`。
+        - 5.2.1. `session/tidb.go` 中的 finishStmt 会在第 4 结束时被调用，5.2 中将 `mysql.ServerStatusInTrans` 变量设置为 `false` 导致 `sessVars.InTxn()` 的返回值为 `false`，此时会调用 `session.CommitTxn` 提交事务。
+        ```go
+        e.ctx.GetSessionVars().SetStatusFlag(mysql.ServerStatusInTrans, false)
+        ```
+    - 5.3 `executor/simple.go`，`SimpleExec.executeRollback` 也会将 `mysql.ServerStatusInTrans` 设置为 `false`，但是会在 `executeRollback` 函数内部就对事物进行 Rollback。和 5.1 一样，会通过 `session.Txn` 函数来获取当前事务，但是不会等待事务激活（注意输入的参数）。如果获取到了事务，则会调用这个事务的 `Rollback` 方法进行清理。
+      ```go
+      txn, err = e.ctx.Txn(false)
+      ```
+
+### Part b
+
+#### 实验背景
+
+在分布式数据库系统中，SQL 写入操作是至关重要的。理解 INSERT 语句的处理过程，有助于掌握数据库的写入路径，从而优化数据库性能和可靠性。本实验将深入解析 INSERT 语句在 TiDB 中的执行流程，涵盖从构建执行器到实际写入数据的各个环节。
+
+实验目的是实现 SQL 写入链路，理解和实现 TiDB 中简单的 INSERT 语句的执行流程。我们需要补充缺失代码中的内容。
+
+#### 任务总览
+
+1. **构建 `InsertExec` 执行器**：
+   - 通过 `executor/builder.go` 中的 `executorBuilder.buildInsert` 构建 `InsertExec`，其结构体定义中组合了 `InsertValues`。
+   - 在构造时，通过 `InsertValues.initInsertColumns` 生成执行所需的列信息。
+
+2. **初始化 `InsertExec`**：
+   - 调用 `executor/insert.go` 中的 `InsertExec.Open` 方法。
+   - 对于基于 `Select` 结果的 `Insert`（如第二条语句），`InsertExec` 中嵌入了 `SelectionExec`，需要通过 `SelectionExec.Open` 初始化。
+
+3. **执行 `InsertExec`**：
+   - `InsertExec.Next` 中根据不同类型的 `Insert` 调用不同的函数。
+     - 对于普通的 `Insert`，调用 `insertRows` 函数（例子中第一条 `Insert`）。
+     - 对于基于 `Select` 的 `Insert`，调用 `insertRowsFromSelect` 函数（例子中第二条 `Insert`）。
+
+4. **处理实际写入数据**：
+   - `insertRows` 和 `insertRowsFromSelect` 函数使用 `InsertExec.exec` 处理实际写入的数据。
+   - 每行数据通过组合的 `InsertValues.addRecord` 函数进行写入。
+
+5. **写入数据到 `membuffer`**：
+   - `InsertValues.addRecord` 函数通过 `table/tables/tables.go` 中的 `TableCommon.AddRecord` 将输入的一行数据写入 `membuffer`。
+
+#### 具体实现
+
+我们将补充的代码结合了实验文档在如下进行了展示。
+
+- 1\. `executor/builder.go`，`executorBuilder.buildInsert` 函数会构造 `InsertExec`，`InsertExec` 的结构体定义中组合了 `InsertValues`。在构造时，会通过 `InsertValues.initInsertColumns` 生成执行所需要涉及到的 Columns 信息。
+   ```go
+   err = ivs.initInsertColumns()
+   ```
+- 2\. `executor/insert.go`，`InsertExec.Open` 方法会被调用，有的 Insert 是根据 Select 的结果写入的（如上面的第二条 Insert），这种情况下 Insert 中嵌入了一条 Select 语句，`InsertExec` 中也嵌入了一个 `SelectionExec`，在 `Open` 的时候也需要通过 `SelectionExec.Open` 初始化 `SelectionExec`。
+   ```go
+   err = e.SelectExec.Open(ctx)
+   ```
+- 3\. `executor/insert.go`，`InsertExec.Next` 中对普通的 Insert 和根据 Select 的 Insert 会调用不同的函数。
+    - 3.1 `executor/insert.go`，普通的 Insert 会使用 `insertRows` 函数进行处理（例子中第一条 Insert）。
+      ```go
+      err = insertRows(ctx, e)
+      ```
+    - 3.2 `executor/insert.go`，根据 Select 的 Insert 会使用 `insertRowsFromSelect` 函数进行处理（例子中第二条 Insert）。
+      ```go
+      err = insertRowsFromSelect(ctx, e)
+      ```
+- 4\. `executor/insert.go`，`insertRows` 和 `insertRowsFromSelect` 都会使用 `InsertExec.exec` 来处理实际写入的数据，`InsertExec.exec` 中，每行数据都会使用被组合的 `InsertValues.addRecord` 进行写入。
+      ```go
+      _, err = e.InsertValues.addRecord(ctx, row)
+      ```
+- 5\. `executor/insert_common.go`，`InsertValues.addRecord` 会将输入的一行数据通过 `table/tables/tables.go` 中的 `TableCommon.AddRecord` 函数写入到 membuffer 当中。
+   ```go
+   recordID, err = e.Table.AddRecord(e.ctx, row, table.WithCtx(ctx))
+   ```
+
+### Part c
+
+#### 实验背景
+
+在数据库系统中，读取操作是非常重要的。`SELECT` 语句的执行过程涉及从存储引擎中读取数据并对其进行处理，以返回给客户端。通过实现和解析 `SELECT` 语句的执行流程，可以深入理解 TiDB 的读取路径和数据处理机制。
+
+Lab4c 的实验目的是实现 SQL 读取链路，掌握 `SELECT` 语句在 TiDB 中的执行流程。通过具体的实现过程，理解数据从存储到读取、处理的完整链路。
+
+#### 任务总览
+
+1. **构建执行器**：
+   - 在 `executor/builder.go` 中，由于数据处理顺序是先通过 `SelectionExec` 获取数据再使用 `ProjectionExec` 进行计算处理，所以最外层是 `ProjectionExec`，内层是 `TableReaderExecutor`。
+   - 在 `executorBuilder.build` 中调用 `executorBuilder.buildProjection` 函数，`ProjectionExec` 会对下层结果进行处理，因此有 children，会递归调用 `executorBuilder.build` 来构建子执行器。
+
+2. **获取数据**：
+   - `TableReaderExecutor` 的数据源是 `TableReaderExecutor.resultHandler`，最后通过 `distsql/select_result.go` 中的 `SelectResult` 执行。
+   - `SelectResult` 从 TiKV 获取所需数据以减少数据传输量。
+   - 调用链路是 `TableReaderExecutor.Next` 调用 `tableResultHandler.nextChunk`，通过 `selectResult.Next` 方法填充 `Chunk`。
+
+3. **并行处理数据**：
+   - `ProjectionExec` 的 `parallelExecute` 函数类似于 `Map-Reduce`，分为外部线程、`fetcher` 线程和 `worker` 线程，具体流程如下：
+     - **外部线程**：调用 `ProjectionExec.Next` 获取处理完成的数据，调用 `ProjectionExec.parallelExecute` 从 `ProjectionExec.outputCh` 中拿数据并写入外部传入的 `Chunk` 中。
+     - **fetcher 线程**：从内部执行器获取数据，从 `projectionInputFetcher.inputCh` 获取 `projectionInput`，将 `TableReaderExecutor` 中的数据通过 `projectionInput.chk.SetRequiredRows` 写入，最后将数据发送到 `input.targetWorker.inputCh`。从 `projectionInputFetcher.outputCh` 读取数据并发送到 `ProjectionExec.outputCh`。
+     - **worker 线程**：从 `projectionWorker.inputCh` 读取内部执行器结果数据，处理后写入 `projectionOutput.chk`。处理完后将 `projectionInput` 还给 `fetcher`。
+
+#### 具体实现
+
+- 1\. `executor/builder.go`，因为数据处理的顺序是先通过 `SelectionExec` 获取数据再使用 `ProjectionExec` 进行计算处理，所以最外层的是 `ProjectionExec`，内层是 `TableReaderExecutor`。在 build 阶段，首先会执行 `executorBuilder.build` 中调用到 `executorBuilder.buildProjection` 函数，`ProjectionExec` 一定会对下层的结果进行处理，所以有 children，这里会递归调用 `executorBuilder.build` 函数来 build 子 Executor。
+   ```go
+   childExec = b.build(v.Children()[0])
+   ```
+- 2\. `executor/table_reader.go`，`TableReaderExecutor` 的数据源是 `TableReaderExecutor.resultHandler`，最后会通过 `distsql/select_result.go` 中的 `SelectResult` 来执行。`SelectResult` 仅会从 TiKV 中获取所需要的数据来减少数据的传输量。具体的调用链路是 `TableReaderExecutor.Next` 调用 `tableResultHandler.nextChunk`，其中通过 `selectResult.Next` 方法（定义在 `SelectResult` 接口中）填充 Chunk。
+- 3\. `executor/projection.go`，我们来看一看 `ProjectionExec` 的 `ProjectionExec.parallelExecute` 是怎么运行的，可以结合 lab0 的 Map-Reduce 来理解。下面所描述的流程在 `ProjectionExec.Next` 的注释中有示意图。
+    - 3.1 外部线程不停地调用 `ProjectionExec.Next` 获取处理完成的数据，在并行处理时会调用 `ProjectionExec.parallelExecute`。`ProjectionExec.parallelExecute` 函数中会从 `ProjectionExec.outputCh` 中拿到数据并且通过 `Chunk.SwapColumns` 将数据写入外部传入的 `Chunk` 中。
+      ```go
+      output, ok = <-e.outputCh
+      ```
+    - 3.2 `fetcher` 线程负责从内部的 Executor 获取读到的数据，这里是从 `projectionInputFetcher.inputCh` 拿到 `projectionInput`，然后把 `TableReaderExecutor` 中读数据通过 `projectionInput.chk.SetRequiredRows` 写入，最后将带有数据的 `projectionInput` 发送到 `input.targetWorker.inputCh` 当中。从 `projectionInputFetcher.outputCh` 读到的数据是 `worker` 线程处理完的结果，将结果发送给 `ProjectionExec.outputCh`（也是 `projectionInputFetcher.globalOutputCh`），同时也会发送到 `input.targetWorker.outputCh`。
+      ```go
+      ...
+      f.globalOutputCh <- output
+      ...
+      targetWorker.inputCh <- input
+		targetWorker.outputCh <- output
+      ```
+    - 3.3 `worker` 线程会把 `fetcher` 写入到 `projectionWorker.inputCh` 当中的内部 Executor 结果数据取出，把 `projectionWorker.outputCh` 的结果写入用的 `projectionOutput` 取出，计算后写入从 `projectionOutput.chk`。在处理之后，只需要将 `projectionInput` 从 `projectionWorker.inputGiveBackCh`（3.2 中的 `projectionInputFetcher.inputCh`） 还给 `fetcher`。
+      ```go
+      ...
+      input = readProjectionInput(w.inputCh, w.globalFinishCh)
+      ...
+      output = readProjectionOutput(w.outputCh, w.globalFinishCh)
+      ...
+      w.inputGiveBackCh <- input
+      ```
+
+### 评测结果
+
+我们运行所有 Lab 4 的测试用例，得到了如下的评测结果。
+
+```bash
+jinbao@JinbaosLaptop:/mnt/d/Projects_CDMS2024/allsturead/Project_2/vldb-2021-labs/tinysql$ make lab4a
+go test -timeout 600s ./server -check.f ^testSuiteLab4A$
+ok      github.com/pingcap/tidb/server  0.182s
+go test -timeout 600s ./session -check.f ^lab4ASessionSuite$
+ok      github.com/pingcap/tidb/session 0.058s
+jinbao@JinbaosLaptop:/mnt/d/Projects_CDMS2024/allsturead/Project_2/vldb-2021-labs/tinysql$ make lab4b
+go test -timeout 600s ./executor -check.f ^testSuiteLab4B$
+ok      github.com/pingcap/tidb/executor        0.073s
+jinbao@JinbaosLaptop:/mnt/d/Projects_CDMS2024/allsturead/Project_2/vldb-2021-labs/tinysql$ make lab4c
+go test -timeout 600s ./executor -check.f ^testSuiteLab4C$
+ok      github.com/pingcap/tidb/executor        0.060
+```
+
+证明我们通过了所有的测试用例。
 
 ## 错误记录
+
 1. 当我们第一次在本地进行 `make lab1P0` ，进行第一部分的评分时，出现了一些错误，报错信息如下。
     ```bash
     jinbao@JinbaosLaptop:/mnt/d/Projects_CDMS2024/allsturead/Project_2/vldb-2021-labs/tinykv$ make lab1P0
@@ -1000,6 +1194,7 @@ executor/adpter.go 227:  e, err = a.buildExecutor(ctx)
     查阅资料得知，遇到的问题是 Go 语言的模块代理（Go module proxy）无法访问。错误信息中的 `dial tcp: lookup proxy.golang.org on 10.255.255.254:53: server misbehaving` 表示在尝试访问 `proxy.golang.org` 时出现了问题。通过查阅资料得知这可能是由于网络问题，或者是因为环境中的 DNS 设置问题。
 
     此后查阅指导文档，尝试进行命令 `export GOPROXY=https://goproxy.io,direct` 将 Go 语言的模块代理服务器设置为 `https://goproxy.io`，当其无法使用时直接从源服务器获取依赖，便可以成功运行测试脚本了。
+
 2. 在解决上述问题之后进行 `make lab1P0` ，进行第一部分的评分时，再次遇到了报错，信息如下。
    ```bash
    GO111MODULE=on go test -v --count=1 --parallel=1 -p=1 ./kv/server -run 1
@@ -1010,6 +1205,7 @@ executor/adpter.go 227:  e, err = a.buildExecutor(ctx)
    make: *** [Makefile:109: lab1P0] Error 2
    ```
    查阅资料得知，问题是找不到目标路径下的 gcc 编译器，查阅本地 gcc 的位置，添加并修改路径之后，成功解决该问题。
+
 3. 在进行 Lab 2 的 P4 部分测试时，部分样例出现了问题，具体报错信息局部如下。
    ```bash
    ...
@@ -1043,6 +1239,7 @@ executor/adpter.go 227:  e, err = a.buildExecutor(ctx)
    [signal SIGSEGV: segmentation violation code=0x1 addr=0x0 pc=0xb45f96]
    ...
    ```
+   
 通过分析这份错误报告，我们可以初步判定一些问题，比如在运行 `commands4b_test.go` 文件时，测试期望得到的是一个值，但实际得到的是 `nil`。
 
 最后，测试出现了 panic，原因是出现了无效的内存地址或者空指针引用，这是一个运行时错误。这种错误通常是因为试图访问一个未被初始化（即 nil）的指针引用的内存地址，或者试图访问一个已经被释放的内存地址。

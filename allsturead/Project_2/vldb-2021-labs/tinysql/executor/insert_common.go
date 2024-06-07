@@ -18,6 +18,8 @@ import (
 	"math"
 
 	"github.com/pingcap/errors"
+	"go.uber.org/zap"
+
 	"github.com/pingcap/tidb/expression"
 	"github.com/pingcap/tidb/kv"
 	"github.com/pingcap/tidb/parser/ast"
@@ -27,7 +29,6 @@ import (
 	"github.com/pingcap/tidb/types"
 	"github.com/pingcap/tidb/util/chunk"
 	"github.com/pingcap/tidb/util/logutil"
-	"go.uber.org/zap"
 )
 
 // InsertValues is the data to insert.
@@ -667,8 +668,18 @@ func (e *InsertValues) addRecord(ctx context.Context, row []types.Datum) (int64,
 	}
 	var recordID int64
 	// Hint: step II.5
+	// DONE
 	// YOUR CODE HERE (lab4)
-	panic("YOUR CODE HERE")
+	// The addRecord function is used to add a new record to the table.
+	// It first gets the current transaction (txn), then checks if constraint checking needs to be done within the transaction.
+	// If constraint checking is not needed within the transaction, it sets the PresumeKeyNotExists option, which means the key is presumed not to exist in the transaction.
+	// Then, it calls the e.Table.AddRecord method to add the row to the table and gets the ID (recordID) of the new record.
+	// After adding the record, it removes the PresumeKeyNotExists option.
+	// If an error occurs during the record addition, it returns the error.
+	// If no error occurs, it checks if there is a last inserted ID, if there is, it sets the last inserted ID.
+	// Finally, it returns the ID of the new record and a nil error.
+	recordID, err = e.Table.AddRecord(e.ctx, row, table.WithCtx(ctx))
+	
 	txn.DelOption(kv.PresumeKeyNotExists)
 	if err != nil {
 		return 0, err

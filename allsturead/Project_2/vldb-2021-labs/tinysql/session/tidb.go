@@ -24,6 +24,8 @@ import (
 	"time"
 
 	"github.com/pingcap/errors"
+	"go.uber.org/zap"
+
 	"github.com/pingcap/tidb/domain"
 	"github.com/pingcap/tidb/executor"
 	"github.com/pingcap/tidb/kv"
@@ -37,7 +39,6 @@ import (
 	"github.com/pingcap/tidb/util/chunk"
 	"github.com/pingcap/tidb/util/logutil"
 	"github.com/pingcap/tidb/util/sqlexec"
-	"go.uber.org/zap"
 )
 
 type domainMap struct {
@@ -177,8 +178,9 @@ func finishStmt(ctx context.Context, sctx sessionctx.Context, se *session, sessV
 	if !sessVars.InTxn() {
 		var err error
 		// Hint: step I.5.2.1
+		// DONE
 		// YOUR CODE HERE (lab4)
-		panic("YOUR CODE HERE")
+		err = se.CommitTxn(ctx)
 		if err != nil {
 			if _, ok := sql.(*executor.ExecStmt).StmtNode.(*ast.CommitStmt); ok {
 				err = errors.Annotatef(err, "previous statement: %s", se.GetSessionVars().PrevStmt)
@@ -227,8 +229,10 @@ func runStmt(ctx context.Context, sctx sessionctx.Context, s sqlexec.Statement) 
 	}
 
 	// Hint: step I.3.3
+	// DONE
 	// YOUR CODE HERE (lab4)
-	panic("YOUR CODE HERE")
+	rs, err = s.Exec(ctx)
+
 	sessVars.TxnCtx.StatementCount++
 	if !s.IsReadOnly() {
 		// Handle the stmt commit/rollback.
@@ -238,8 +242,9 @@ func runStmt(ctx context.Context, sctx sessionctx.Context, s sqlexec.Statement) 
 					sctx.StmtRollback()
 				} else {
 					// Hint: step I.3.4
+					// DONE
 					// YOUR CODE HERE (lab4)
-					panic("YOUR CODE HERE")
+					se.StmtCommit()
 				}
 			}
 		} else {

@@ -19,6 +19,8 @@ import (
 	"strings"
 
 	"github.com/pingcap/errors"
+	"go.uber.org/zap"
+
 	"github.com/pingcap/tidb/expression"
 	"github.com/pingcap/tidb/infoschema"
 	"github.com/pingcap/tidb/parser/ast"
@@ -32,7 +34,6 @@ import (
 	"github.com/pingcap/tidb/util/logutil"
 	"github.com/pingcap/tidb/util/sqlexec"
 	"github.com/pingcap/tidb/util/stringutil"
-	"go.uber.org/zap"
 )
 
 // recordSet wraps an executor, implements sqlexec.RecordSet interface
@@ -179,15 +180,18 @@ func (a *ExecStmt) Exec(ctx context.Context) (_ sqlexec.RecordSet, err error) {
 	sctx := a.Ctx
 	var e Executor
 	// Hint: step I.4.1
+	// DONE
 	// YOUR CODE HERE (lab4)
-	panic("YOUR CODE HERE")
+	e, err = a.buildExecutor()
+
 	if err != nil {
 		return nil, err
 	}
 
 	// Hint: step I.4.2
+	// DONE
 	// YOUR CODE HERE (lab4)
-	panic("YOUR CODE HERE")
+	err = e.Open(ctx)
 	if err != nil {
 		terror.Call(e.Close)
 		return nil, err
@@ -225,10 +229,10 @@ func (a *ExecStmt) handleNoDelay(ctx context.Context, e Executor) (bool, sqlexec
 	// If the executor doesn't return any result to the client, we execute it without delay.
 	if toCheck.Schema().Len() == 0 {
 		// Hint: step I.4.3
+		// DONE
 		// YOUR CODE HERE (lab4)
-		panic("YOUR CODE HERE")
-		//return true, r, err
-		return true, nil, nil
+		r, err := a.handleNoDelayExecutor(ctx, e)
+		return true, r, err
 	}
 
 	return false, nil, nil
@@ -241,8 +245,9 @@ func (a *ExecStmt) handleNoDelayExecutor(ctx context.Context, e Executor) (sqlex
 	}()
 
 	// Hint: step I.4.3.1
+	// DONE
 	// YOUR CODE HERE (lab4)
-	panic("YOUR CODE HERE")
+	err = e.Next(ctx, newFirstChunk(e))
 	if err != nil {
 		return nil, err
 	}
