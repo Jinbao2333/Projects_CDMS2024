@@ -1,4 +1,27 @@
-# VLDB Lab 2021
+# VLDB Lab 2021 实验报告
+
+## 项目概述
+
+该项目的目标是构建一个分布式数据库系统，基于 VLDB 2021 暑期学校的实验课程。
+
+该项目包含了几个关键的数据库系统组件的实现，包括存储引擎（TinyKV），集群调度器（TinyScheduler）以及 SQL 层（TinySQL）。这些组件共同构成了一个完整的分布式数据库系统，可以处理来自客户端的 SQL 查询，并在分布式环境中存储和检索数据。
+
+项目分为四个实验，每个实验都专注于实现数据库系统的一个特定部分。在第一个实验中实现 TinyKV 的存储和日志层。在第二个实验中实现 TinyKV 的事务层。在第三个实验中实现 Percolator 协议。在第四个实验中实现 SQL 执行层，包括 SQL 协议的实现，更新执行器的实现，以及选择和投影执行器的实现。
+
+## 分组情况
+
+### 组号：第 5 组
+
+### 组员信息
+
+|姓名|学号|
+|:----|:----|
+|贺云航|10225101419|
+|王雪飞|10225501435|
+|姜嘉祺|10225501447|
+
+下面进行每一部分的实验报告。
+
 ## Lab 1
 
 Lab 1 介绍了分布式事务型数据库系统的设计，这里着眼于存储和日志层。该系统旨在确保事务系统的 ACID 特性，尤其是持久性（Durability），通过在分布式环境中改进日志的可用性（Availability）和可靠性（Reliability）来实现。这主要依靠将事务日志复制到多个节点，从而降低日志丢失的可能性。
@@ -268,9 +291,11 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
    - 当事务命令成功应用后，服务器会将处理结果返回给客户端，完成整个请求处理流程。
 
 #### `kv/transaction/commands/get.go`: 
+
 在 `kv/transaction/commands/get.go` 文件中，我们需要实现 `GetCommand` 结构体的 `PrepareWrites` 方法。这个方法的主要作用是构建事务的写入内容，以便后续的写操作可以知道要写哪些键。
 
 具体地，首先，我们尝试获取一个键的锁，并检查这个锁是否存在并且被锁定。如果存在并且被锁定，那么就将锁的信息设置在响应中并返回。如果在获取锁的过程中发生错误，那么就立即返回这个错误。
+
 ```go
 lock, err := txn.GetLock(key)
 if err != nil {
@@ -283,6 +308,7 @@ if lock != nil && lock.IsLockedFor(key, g.startTs, response) {
 ```
 
 其次，调用 `txn.GetValue(key)` 从存储中获取键的已提交值，并在响应中返回值或标记为未找到，从而确保读取操作的正确性和一致性。
+
 ```go
 value, err := txn.GetValue(key)
 if err != nil {
@@ -302,6 +328,7 @@ if value == nil {
 具体实现步骤如下：
 
    - **写冲突检查**：通过调用 `txn.MostRecentWrite` 方法检查当前事务的写入是否与其他事务冲突。如果存在冲突，返回写冲突错误。
+
       ```go
       if write, commitTs, err := txn.MostRecentWrite(key); err != nil {
          return nil, err
@@ -311,7 +338,9 @@ if value == nil {
          }, nil
       }
       ```
+
    - **锁检查**：通过调用 `txn.GetLock` 方法检查键是否被锁定。如果被锁定且锁定的事务与当前事务不同，返回锁错误。
+
       ```go
       if keyLock, err = txn.GetLock(key); err != nil {
          return nil, err
@@ -327,7 +356,9 @@ if value == nil {
          }, nil
       }
       ```
+
    - **写锁和值**：根据变更的操作类型（插入或删除），在事务中写入相应的值，并在键上放置锁。
+
       ```go
       keyLock = &mvcc.Lock{
          Primary: p.request.PrimaryLock,
@@ -351,11 +382,13 @@ if value == nil {
 在这部分中，我们实现第二阶段，也即提交阶段，来处理事务的提交操作。
 
 首先我们检查 `commitTs`（提交时间戳）是否有效。在这个上下文中，commitTs 应该大于 startTs（开始时间戳）。如果不是，我们返回错误信息。
+
 ```go
 if commitTs <= c.startTs {
 	return nil, fmt.Errorf("invalid commitTs: %v, should be greater thanstartTs: %v", commitTs, c.startTs)
 }
 ```
+
 随后，我们检查键被锁定的情况。首先检查了是否存在对应的锁。如果不存在锁，或者锁的时间戳与事务的开始时间戳不匹配，那么就表示键被其他事务锁定，或者键上没有锁。
 
 在这种情况下，我们检查键的提交/回滚记录。如果没有找到记录，或者找到的记录是回滚类型，那么就会返回一个未找到锁的错误。同时，代码也会考虑到提交请求可能已经过时，也就是说，键可能已经被提交或回滚了。
@@ -1160,6 +1193,8 @@ ok      github.com/pingcap/tidb/executor        0.060
 ```
 
 证明我们通过了所有的测试用例。
+
+至此，我们完成了所有的实验内容，下面进行错误记录总结。
 
 ## 错误记录
 
