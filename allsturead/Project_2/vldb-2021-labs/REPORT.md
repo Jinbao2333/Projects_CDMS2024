@@ -1000,8 +1000,17 @@ executor/adpter.go 227:  e, err = a.buildExecutor(ctx)
     查阅资料得知，遇到的问题是 Go 语言的模块代理（Go module proxy）无法访问。错误信息中的 `dial tcp: lookup proxy.golang.org on 10.255.255.254:53: server misbehaving` 表示在尝试访问 `proxy.golang.org` 时出现了问题。通过查阅资料得知这可能是由于网络问题，或者是因为环境中的 DNS 设置问题。
 
     此后查阅指导文档，尝试进行命令 `export GOPROXY=https://goproxy.io,direct` 将 Go 语言的模块代理服务器设置为 `https://goproxy.io`，当其无法使用时直接从源服务器获取依赖，便可以成功运行测试脚本了。
-
-2. 在进行 Lab 2 的 P4 部分测试时，部分样例出现了问题，具体报错信息局部如下。
+2. 在解决上述问题之后进行 `make lab1P0` ，进行第一部分的评分时，再次遇到了报错，信息如下。
+   ```bash
+   GO111MODULE=on go test -v --count=1 --parallel=1 -p=1 ./kv/server -run 1
+   # runtime/cgo
+   cgo: C compiler "/usr/local/gcc/bin/gcc" not found: exec: "/usr/local/gcc/bin/gcc": stat /usr/local/gcc/bin/gcc: no such file or directory
+   FAIL    github.com/pingcap-incubator/tinykv/kv/server [build failed]
+   FAIL
+   make: *** [Makefile:109: lab1P0] Error 2
+   ```
+   查阅资料得知，问题是找不到目标路径下的 gcc 编译器，查阅本地 gcc 的位置，添加并修改路径之后，成功解决该问题。
+3. 在进行 Lab 2 的 P4 部分测试时，部分样例出现了问题，具体报错信息局部如下。
    ```bash
    ...
    === RUN   TestGetDeleted4B
